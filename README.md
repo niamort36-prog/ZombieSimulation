@@ -55,6 +55,7 @@ Puis dans le dépôt : **Settings → Pages → Source : Deploy from a branch �
 | `Tab` | Afficher/masquer le panneau |
 | `F` | Recadrer la vue sur la zone de jeu |
 | `1` … `5` | Évac · Frappe · Largage · Patrouille · Placer zombies |
+| `6` `7` `8` | Base · Barrage routier · Ratissage |
 | `Échap` | Désélectionner l'outil |
 
 ---
@@ -96,13 +97,82 @@ rue à la première rafale.
 - **Civils** — errent, fuient les zombies en criant (ce qui attire d'autres
   zombies), rejoignent l'hélicoptère, rentrent chez eux quand le calme revient.
   Une fraction d'entre eux est armée.
-- **Gendarmes / militaires** — engagent à vue dans la portée de leur arme,
-  décrochent si le contact devient trop proche, patrouillent la zone qu'on leur
-  assigne, vont se réapprovisionner aux caisses parachutées quand ils sont à sec.
+- **Gendarmes / militaires** — voir *Escouades* ci-dessous : ils opèrent en
+  groupe, regroupent et escortent les civils, montent des barrages et se
+  ravitaillent quand ils sont à sec.
 - **Zombies** — vue en cône (portée réglable) bloquée par les bâtiments, ouïe
   (réglable) qui les oriente vers les coups de feu, les cris et les explosions.
   Sans proie, ils repèrent les bâtiments habités et forcent l'entrée.
   Lents ou rapides, en proportion réglable.
+
+### Escouades
+
+Les combattants ne décident plus individuellement. Ils sont répartis en
+**escouades** (6 militaires, 3 gendarmes) : l'escouade porte la mission, le chef
+mène, les équipiers tiennent une formation en V — ou un anneau autour des civils
+quand ils escortent. Un soldat ne poursuit jamais un zombie au point de quitter
+son groupe ou d'abandonner les gens qu'il protège.
+
+Sans ordre du joueur, une escouade agit d'elle-même : elle **ramasse les civils
+qu'elle croise**, les **escorte vers la base** — ou, à défaut, vers le secteur le
+plus calme d'après la carte de menace — puis repart chercher du monde là où il en
+reste. Elle avance au pas des civils, jamais plus vite.
+
+| Ordre | Déclenchement |
+|---|---|
+| Escorte | par défaut, sans ordre |
+| Patrouille | outil 🎯, rectangle tracé à la souris |
+| Barrage | outil 🚧, sur une route |
+| Ratissage | outil ⚔️, sur un secteur |
+| Ralliement base | bouton « Tous à la base » |
+| Ravitaillement | automatique sous 60 cartouches par homme |
+
+### Munitions
+
+Un militaire porte **300 cartouches** (30 en chargeur + 270 en réserve), un
+gendarme 120. Chaque tir en consomme une, les rechargements prennent du temps.
+Sous 60 cartouches par homme, l'escouade **rompt le contact** et rejoint la
+source la plus proche — base, camion de ravitaillement ou caisse parachutée —
+puis reprend sa mission là où elle l'avait laissée.
+
+### Base
+
+Placée par le joueur (outil 🏕️), elle rayonne sur 70 m et sert de
+**ravitaillement, d'infirmerie et de refuge** : les soldats y refont le plein,
+les blessés s'y soignent, et c'est la destination par défaut de toutes les
+escortes. Le compteur 🟢 du bandeau indique les civils à l'abri.
+
+### Barrages routiers
+
+Un barrage se **construit** : l'escouade désignée s'y rend, met une vingtaine de
+secondes à l'établir (plus vite à plusieurs), puis le tient. Une fois monté, il
+coupe la route à tout véhicule et ralentit fortement les zombies, qui doivent
+l'escalader.
+
+### Véhicules
+
+Voitures de particuliers, fourgons, camions de transport et camion de
+ravitaillement. Ils **ne circulent que sur la voirie OSM** — pathfinding dédié
+sur les composantes connexes du réseau routier — avec inertie, braquage limité,
+freinage devant un obstacle, et écrasement des zombies happés par la calandre.
+
+- Une **escouade** qui doit franchir plus de 220 m embarque, avec les civils
+  qu'elle escorte.
+- Des **civils paniqués** réquisitionnent une voiture, attendent une dizaine de
+  secondes leurs voisins, puis filent vers la base — ou hors de la zone s'il n'y
+  a pas de base, auquel cas ils comptent comme évacués.
+- Une frappe transforme un véhicule en **épave**, qui obstrue durablement la
+  chaussée.
+
+### Maisons barricadées
+
+Un civil enfermé et inquiet **barricade sa maison** : chaque niveau (3 au
+maximum, arc bleu autour du halo) rallonge de 9 s le temps qu'un zombie met à
+entrer. Une effraction réussie fait sauter un niveau.
+
+S'il est **armé, il tire par la fenêtre** sur ce qui passe à moins de 34 m. La
+ligne de vue part de la façade, pas du centre du bâtiment — sinon le bâtiment
+bloquerait ses propres tirs.
 
 ### Infection
 
@@ -135,6 +205,8 @@ js/
   pathfinding.js    A* (tas binaire, tampons réutilisés) + flow-fields Dijkstra
   spatial.js        hachage spatial pour la perception et la séparation
   entities.js       fabrique d'entités et fiches d'unités
+  squads.js         commandement : formation, missions, escorte
+  vehicles.js       conduite routière, embarquement, écrasement
   sim.js            boucle de simulation : IA, combat, infection, opérations
   render.js         rendu Canvas 2D par-dessus Leaflet
   main.js           carte, interface, boucle principale
@@ -158,7 +230,7 @@ Centre historique de Colmar, zone 536 × 401 m (445 bâtiments, 43 % de bâti) :
 |---|---|
 | Chargement Overpass | 2 à 7 s |
 | Mise en place (rasterisation + composantes + peuplement) | 21 ms |
-| ~1 800 entités, un pas de simulation | 2 à 3 ms |
+| ~1 600 entités, 8 escouades, 44 véhicules, un pas de simulation | 1,5 ms |
 | Rendu d'une image (zone entière à l'écran) | 4,5 ms |
 | Échecs de pathfinding | 0 % |
 

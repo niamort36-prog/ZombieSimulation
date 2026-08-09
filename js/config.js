@@ -53,11 +53,14 @@ export const T = {
   WATER:    1 << 1,   // bloque déplacement au sol
   WALL:     1 << 2,   // mur : bloque déplacement + vue
   FENCE:    1 << 3,   // clôture : bloque déplacement seulement
-  ROAD:     1 << 4,   // bonus de vitesse, zone de spawn
+  ROAD:     1 << 4,   // circulable, bonus de vitesse à pied
   RUBBLE:   1 << 5,   // décombres : franchissable au ralenti
+  BLOCKADE: 1 << 6,   // barrage : infranchissable en véhicule, escaladable à pied
 };
 export const BLOCK_MOVE = T.BUILDING | T.WATER | T.WALL | T.FENCE;
 export const BLOCK_SIGHT = T.BUILDING | T.WALL;
+/* Un véhicule ne roule que sur la voirie, et un barrage l'arrête net. */
+export const BLOCK_DRIVE = BLOCK_MOVE | T.BLOCKADE | T.RUBBLE;
 
 /* ── Fiches d'unités ─────────────────────────────────── */
 export const KIND = { CIV: 0, POL: 1, MIL: 2, ZOM: 3 };
@@ -87,14 +90,61 @@ export const UNIT = {
 };
 
 /* ── Armes ───────────────────────────────────────────── */
+/* `reserve` = cartouches hors chargeur. Dotation de référence d'un militaire :
+   30 en chargeur + 270 en réserve = 300 cartouches, à reconstituer à la base,
+   auprès d'un camion de ravitaillement ou par parachutage. */
 export const WEAPON = {
   none:   null,
-  pistol: { name:'Pistolet', dmg:26, rpm:220, mag:15,  reserve:60,  range:45,  reload:2.2, spread:0.055, noise:'pistol', auto:false, hs:0.10 },
-  smg:    { name:'PM',       dmg:24, rpm:750, mag:30,  reserve:180, range:70,  reload:2.6, spread:0.075, noise:'rifle',  auto:true,  hs:0.08 },
-  rifle:  { name:'Fusil',    dmg:38, rpm:600, mag:30,  reserve:210, range:140, reload:2.9, spread:0.032, noise:'rifle',  auto:true,  hs:0.16 },
-  shotgun:{ name:'Fusil à pompe', dmg:70, rpm:70, mag:6, reserve:40, range:28, reload:4.2, spread:0.13, noise:'rifle', auto:false, hs:0.22 },
-  lmg:    { name:'Mitrailleuse', dmg:36, rpm:800, mag:100, reserve:400, range:160, reload:6.5, spread:0.06, noise:'rifle', auto:true, hs:0.10 },
+  pistol: { name:'Pistolet', dmg:26, rpm:220, mag:15,  reserve:105, range:45,  reload:2.2, spread:0.055, noise:'pistol', auto:false, hs:0.10 },
+  smg:    { name:'PM',       dmg:24, rpm:750, mag:30,  reserve:270, range:70,  reload:2.6, spread:0.075, noise:'rifle',  auto:true,  hs:0.08 },
+  rifle:  { name:'Fusil',    dmg:38, rpm:600, mag:30,  reserve:270, range:140, reload:2.9, spread:0.032, noise:'rifle',  auto:true,  hs:0.16 },
+  shotgun:{ name:'Fusil à pompe', dmg:70, rpm:70, mag:6, reserve:54, range:28, reload:4.2, spread:0.13, noise:'rifle', auto:false, hs:0.22 },
+  lmg:    { name:'Mitrailleuse', dmg:36, rpm:800, mag:100, reserve:500, range:160, reload:6.5, spread:0.06, noise:'rifle', auto:true, hs:0.10 },
 };
+
+/* ── Véhicules ───────────────────────────────────────
+   Ils ne circulent que sur la voirie OSM. `len` sert au rendu et à
+   l'écrasement des zombies, `seats` inclut le conducteur. */
+export const VEHICLE = {
+  car:    { name:'Voiture',  seats:4,  speed:15, accel:5.5, brake:11, turn:2.2, half:2.1, wide:0.9, hp:200, faction:'civ', color:'#c9d4e0' },
+  van:    { name:'Fourgon',  seats:9,  speed:13, accel:4.0, brake:9,  turn:1.7, half:2.7, wide:1.1, hp:300, faction:'mil', color:'#5c6b4a' },
+  truck:  { name:'Camion',   seats:18, speed:11, accel:3.0, brake:8,  turn:1.3, half:3.7, wide:1.3, hp:480, faction:'mil', color:'#4a5540' },
+  supply: { name:'Ravitaillement', seats:4, speed:11, accel:3.0, brake:8, turn:1.3, half:3.7, wide:1.3, hp:420, faction:'mil', color:'#6b5a2f', ammo:9000 },
+};
+
+/* ── Escouades ───────────────────────────────────────
+   Les combattants ne raisonnent plus en individus : une escouade porte
+   l'ordre, ses membres tiennent une formation autour du chef. */
+export const SQUAD = {
+  milSize: 6,          // effectif visé d'une escouade militaire
+  polSize: 3,          // …et d'une patrouille de gendarmerie
+  spacing: 7,          // mètres entre deux équipiers en formation
+  leash: 55,           // au-delà, un équipier rompt le contact et rejoint
+  regroup: 26,         // distance à partir de laquelle on se resserre
+  lowAmmo: 60,         // cartouches restantes déclenchant un ravitaillement
+  escortRadius: 45,    // rayon de collecte des civils à escorter
+};
+
+/* ── Base, barrages, fortification ───────────────────── */
+export const BASE = {
+  radius: 70,
+  resupplyRate: 220,   // cartouches par seconde et par soldat
+  healRate: 6,         // points de vie par seconde
+};
+export const BLOCKADE = {
+  buildTime: 20,       // secondes de mise en place
+  halfWidth: 11,       // demi-largeur du barrage en travers de la route
+  climbCost: 3.5,      // surcoût de franchissement à pied
+};
+export const FORTIFY = {
+  rate: 0.055,         // niveau gagné par seconde et par occupant actif
+  max: 3,
+  breachPerLevel: 9,   // secondes d'effraction ajoutées par niveau
+  windowRange: 34,     // portée de tir depuis une fenêtre
+};
+
+/* Carte de menace : grille grossière servant à juger si un secteur est sûr */
+export const THREAT = { cell: 32, decay: 0.82, refresh: 1.0, radius: 1 };
 
 /* Compétence de tir par type d'unité (0..1) */
 export const SKILL = { [KIND.CIV]: 0.32, [KIND.POL]: 0.68, [KIND.MIL]: 0.88 };
@@ -104,4 +154,18 @@ export const ST = {
   IDLE:0, WANDER:1, FLEE:2, SEEK:3, ATTACK:4, PATROL:5,
   INDOOR:6, BOARD:7, EVACUATED:8, DOWNED:9, TURNING:10,
   FEED:11, GOTO:12, DEAD:13, RESUPPLY:14,
+  FORMUP:15,     // rejoint sa place dans la formation
+  ESCORT:16,     // encadre un groupe de civils
+  BUILD:17,      // met en place un barrage
+  GARRISON:18,   // tient la base
+  DRIVING:19,    // au volant
+  ABOARD:20,     // passager d'un véhicule
+  BOARDVEH:21,   // rejoint un véhicule pour y monter
+  FOLLOW:22,     // civil suivant une escorte
+};
+
+/* Ordres transmis à une escouade */
+export const ORDER = {
+  PATROL:'patrol', ESCORT:'escort', BLOCKADE:'blockade',
+  GARRISON:'garrison', RESUPPLY:'resupply', SWEEP:'sweep',
 };

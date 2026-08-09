@@ -84,6 +84,7 @@ body.tool-active .leaflet-container{cursor:cell}
 .dot.civ{background:var(--civ)} .dot.pol{background:var(--pol)}
 .dot.mil{background:var(--mil)} .dot.zom{background:var(--zom)}
 .dot.evac{background:#4ee0c0} .dot.dead{background:#6b7280}
+.dot.base{background:#a5f3c0}
 .stat.clock{color:var(--warn)} .stat.fps{color:var(--txt-dim);min-width:auto}
 
 /* transport */

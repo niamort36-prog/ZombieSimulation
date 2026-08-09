@@ -4,12 +4,20 @@
    infection, opérations (hélico / frappes / largages).
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, T, KIND, UNIT, WEAPON, ST, BLOCK_MOVE } from './config.js';
+import {
+  CFG, T, KIND, UNIT, WEAPON, ST, BLOCK_MOVE,
+  SQUAD, ORDER, BASE, BLOCKADE, FORTIFY, THREAT, VEHICLE,
+} from './config.js';
 import { Grid } from './grid.js';
 import { PathFinder, FlowField } from './pathfinding.js';
 import { SpatialHash } from './spatial.js';
 import { makeEntity, giveWeapon, addAmmo, isPrey, isThreat, isFighter } from './entities.js';
 import { dist, dist2, clamp, rand, randInt, pick, wrapAngle } from './geo.js';
+import {
+  makeVehicle, updateVehicle, updateUnloading, embark, disembark,
+  driveTo, seatsLeft, vehicleFree,
+} from './vehicles.js';
+import { formSquads, updateSquads, slotPosition, escortCentroid, orderBlockade } from './squads.js';
 
 export class Sim {
   constructor() {
@@ -26,6 +34,10 @@ export class Sim {
     this.strikes = [];
     this.crates = [];
     this.buildings = [];
+    this.vehicles = [];
+    this.squads = [];
+    this.blockades = [];
+    this.base = null;
 
     this.pathQueue = [];
     this.stats = { civ: 0, pol: 0, mil: 0, zom: 0, evac: 0, dead: 0, bitten: 0 };
@@ -37,6 +49,7 @@ export class Sim {
       zSight: 45, zHear: 90, azimuths: new Set(['N']),
       heliCap: 12, heliBoard: 3, heliWait: 45, strikeRadius: 40,
       autoWave: false, wavePeriod: 120,
+      civCars: 40, milTrucks: 3, useVehicles: true, autoEscort: true,
     };
     this._waveT = 0;
   }
@@ -46,9 +59,11 @@ export class Sim {
     this.frame = frame;
     this.grid = grid;
     this.buildings = buildings;
-    this.pf = new PathFinder(grid);
+    this.pf = new PathFinder(grid, 'foot');
+    this.roadPf = new PathFinder(grid, 'road');
     this.hash = new SpatialHash(frame.width, frame.height, 16);
     this.indexBuildings();
+    this.initThreat();
     this.reset();
     this.ready = true;
   }
@@ -95,12 +110,113 @@ export class Sim {
     this.helis.length = 0;
     this.strikes.length = 0;
     this.crates.length = 0;
+    this.vehicles.length = 0;
+    this.squads.length = 0;
     this.pathQueue.length = 0;
     this.time = 0;
     this._waveT = 0;
-    this.stats = { civ: 0, pol: 0, mil: 0, zom: 0, evac: 0, dead: 0, bitten: 0 };
-    for (const b of this.buildings) b.occupants = [];
+    this._threatT = 0;
+    this.stats = { civ: 0, pol: 0, mil: 0, zom: 0, evac: 0, dead: 0, bitten: 0, sheltered: 0 };
+    for (const b of this.buildings) { b.occupants = []; b.fortify = 0; b.breach = 0; b.destroyed = false; }
+    /* Les barrages déjà posés sont retirés de la grille */
+    for (const bl of this.blockades) if (bl.built) this.grid.removeBlockade(bl.x, bl.y, BLOCKADE.halfWidth);
+    this.blockades.length = 0;
+    this.base = null;
+    if (this.threat) this.threat.fill(0);
     this._fields = new Map();
+  }
+
+  /* ══ Carte de menace ══════════════════════════════════
+     Grille grossière alimentée par la position des zombies. Elle sert aux
+     escouades à juger « ce secteur est sûr » et aux civils à choisir vers où
+     fuir, sans avoir à inspecter toutes les entités. */
+  initThreat() {
+    this.tw = Math.max(1, Math.ceil(this.frame.width / THREAT.cell));
+    this.th = Math.max(1, Math.ceil(this.frame.height / THREAT.cell));
+    this.threat = new Float32Array(this.tw * this.th);
+  }
+
+  updateThreat(dt) {
+    this._threatT -= dt;
+    if (this._threatT > 0) return;
+    this._threatT = THREAT.refresh;
+    const t = this.threat;
+    for (let i = 0; i < t.length; i++) t[i] *= THREAT.decay;
+    for (const e of this.entities) {
+      if (!e.alive || e.kind !== KIND.ZOM || e.vehicle) continue;
+      const cx = clamp((e.x / THREAT.cell) | 0, 0, this.tw - 1);
+      const cy = clamp((e.y / THREAT.cell) | 0, 0, this.th - 1);
+      /* On étale un peu : un zombie menace aussi les cases voisines */
+      for (let dy = -THREAT.radius; dy <= THREAT.radius; dy++) {
+        const yy = cy + dy; if (yy < 0 || yy >= this.th) continue;
+        for (let dx = -THREAT.radius; dx <= THREAT.radius; dx++) {
+          const xx = cx + dx; if (xx < 0 || xx >= this.tw) continue;
+          t[yy * this.tw + xx] += (dx || dy) ? 0.4 : 1;
+        }
+      }
+    }
+  }
+
+  threatAt(x, y) {
+    if (!this.threat) return 0;
+    const cx = clamp((x / THREAT.cell) | 0, 0, this.tw - 1);
+    const cy = clamp((y / THREAT.cell) | 0, 0, this.th - 1);
+    return this.threat[cy * this.tw + cx];
+  }
+
+  /** Point le plus sûr et joignable depuis (x,y) : la base, sinon le secteur
+      le plus calme dans un rayon raisonnable. */
+  safePoint(x, y) {
+    if (this.base) return { x: this.base.x, y: this.base.y };
+    let best = null, bestScore = Infinity;
+    for (let i = 0; i < 60; i++) {
+      const a = rand(0, Math.PI * 2), r = rand(60, 400);
+      const px = clamp(x + Math.cos(a) * r, 4, this.frame.width - 4);
+      const py = clamp(y + Math.sin(a) * r, 4, this.frame.height - 4);
+      if (!this.grid.inMainComponent(px, py)) continue;
+      /* menace du secteur, pondérée par la distance à parcourir */
+      const score = this.threatAt(px, py) * 10 + dist(x, y, px, py) / 120;
+      if (score < bestScore) { bestScore = score; best = { x: px, y: py }; }
+    }
+    return best;
+  }
+
+  /** Secteur où il reste des civils à secourir. */
+  civilianHotspot(x, y) {
+    let best = null, bestScore = -Infinity;
+    for (const b of this.buildings) {
+      if (!b.occupants.length || b.destroyed) continue;
+      const d = dist(x, y, b.c.x, b.c.y);
+      if (d > 600) continue;
+      const score = b.occupants.length - d / 60 - this.threatAt(b.c.x, b.c.y) * 1.5;
+      if (score > bestScore) { bestScore = score; best = this.doorOf(b); }
+    }
+    return best;
+  }
+
+  /** Source de munitions la plus proche : base, camion, ou caisse larguée. */
+  resupplyPoint(x, y) {
+    let best = null, bd = Infinity;
+    if (this.base) { best = { x: this.base.x, y: this.base.y }; bd = dist(x, y, this.base.x, this.base.y); }
+    for (const v of this.vehicles) {
+      if (!v.alive || v.type !== 'supply' || v.ammo <= 0) continue;
+      const d = dist(x, y, v.x, v.y);
+      if (d < bd) { bd = d; best = { x: v.x, y: v.y, vehicle: v }; }
+    }
+    for (const c of this.crates) {
+      if (!c.landed || c.uses <= 0) continue;
+      const d = dist(x, y, c.x, c.y);
+      if (d < bd) { bd = d; best = { x: c.x, y: c.y, crate: c }; }
+    }
+    return best;
+  }
+
+  setBase(x, y) {
+    const spot = this.grid.nearestFreeMain(x, y, 60);
+    if (!spot) return null;
+    this.base = { x: spot.x, y: spot.y, r: BASE.radius, ammoGiven: 0 };
+    this._fields.delete('base');
+    return this.base;
   }
 
   /* ═══ Peuplement ══════════════════════════════════════ */
@@ -152,7 +268,45 @@ export class Sim {
       e.state = ST.PATROL;
       this.add(e);
     }
+
+    this.spawnVehicles();
+    formSquads(this);
     this.countStats();
+  }
+
+  /** Parc automobile initial : voitures de particuliers garées le long des
+      rues, transport de troupe et camion de ravitaillement pour l'armée. */
+  spawnVehicles() {
+    const p = this.params, g = this.grid;
+    g.ensureRoadComponents();
+    if (g.mainRoad < 0) return;              // zone sans voirie exploitable
+
+    const parkSpot = () => {
+      for (let i = 0; i < 120; i++) {
+        const x = rand(0, this.frame.width), y = rand(0, this.frame.height);
+        const s = g.nearestRoad(x, y, 12);
+        if (!s) continue;
+        /* pas deux véhicules l'un dans l'autre */
+        if (this.vehicles.some(v => dist2(v.x, v.y, s.x, s.y) < 100)) continue;
+        return s;
+      }
+      return null;
+    };
+
+    for (let i = 0; i < p.civCars; i++) {
+      const s = parkSpot();
+      if (!s) break;
+      this.vehicles.push(makeVehicle('car', s.x, s.y, rand(0, Math.PI * 2)));
+    }
+    for (let i = 0; i < p.milTrucks; i++) {
+      const s = parkSpot();
+      if (!s) break;
+      this.vehicles.push(makeVehicle(i % 2 ? 'van' : 'truck', s.x, s.y, rand(0, Math.PI * 2)));
+    }
+    if (p.milTrucks > 0) {
+      const s = parkSpot();
+      if (s) this.vehicles.push(makeVehicle('supply', s.x, s.y, rand(0, Math.PI * 2)));
+    }
   }
 
   add(e) { this.entities.push(e); return e; }
@@ -300,21 +454,29 @@ export class Sim {
     const ents = this.entities;
     for (let i = 0; i < ents.length; i++) {
       const e = ents[i];
-      if (e.alive && !e.indoor && e.state !== ST.EVACUATED) this.hash.insert(e);
+      /* un passager n'existe plus pour le monde extérieur */
+      if (e.alive && !e.indoor && !e.vehicle && e.state !== ST.EVACUATED) this.hash.insert(e);
     }
 
-    /* 2 — opérations */
+    /* 2 — situation générale */
+    this.updateThreat(dt);
+    this.updateSquadOrders(dt);
+
+    /* 3 — opérations */
     this.updateStrikes(dt);
     this.updateHelis(dt);
     this.updateCrates(dt);
+    this.updateBlockades(dt);
+    this.updateVehicles(dt);
+    this.updateBase(dt);
 
-    /* 3 — entités */
+    /* 4 — entités */
     for (let i = 0; i < ents.length; i++) this.updateEntity(ents[i], dt);
 
-    /* 4 — file de pathfinding */
+    /* 5 — file de pathfinding */
     this.flushPaths();
 
-    /* 5 — effets & nettoyage */
+    /* 6 — effets & nettoyage */
     this.updateEffects(dt);
     this.cull();
   }
@@ -443,6 +605,16 @@ export class Sim {
       return;
     }
 
+    /* À bord d'un véhicule : la conduite est gérée par le véhicule lui-même,
+       le passager est hors du monde (ni visible, ni mordable). */
+    if (e.vehicle) {
+      if (!e.vehicle.alive) { disembark(this, e, e.vehicle); return; }
+      e.x = e.vehicle.x; e.y = e.vehicle.y; e.dir = e.vehicle.dir;
+      e.reloadT = Math.max(0, e.reloadT - dt);
+      if (e.reloadT === 0 && e.mag <= 0) this.finishReload(e);
+      return;
+    }
+
     /* Les civils à l'abri représentent l'essentiel de la population : on les
        met à jour deux fois par seconde avec un dt agrégé, et de façon
        échelonnée pour lisser la charge. */
@@ -452,6 +624,8 @@ export class Sim {
       const agg = 0.5 - e.indoorT;
       e.indoorT = 0.5;
       e.alert = Math.max(0, e.alert - agg * 0.05);
+      e.fireT -= agg;
+      if (e.reloadT > 0) { e.reloadT -= agg; if (e.reloadT <= 0) this.finishReload(e); }
       this.aiIndoor(e, agg);
       return;
     }
@@ -510,7 +684,13 @@ export class Sim {
       if (d < 10) {
         b.breach = (b.breach || 0) + dt;
         this.face(e, b.c.x, b.c.y);
-        if (b.breach > 6) { this.breachBuilding(b); b.breach = 0; }
+        /* Une maison barricadée résiste bien plus longtemps. */
+        const need = 6 + (b.fortify || 0) * FORTIFY.breachPerLevel;
+        if (b.breach > need) {
+          this.breachBuilding(b);
+          b.breach = 0;
+          b.fortify = Math.max(0, (b.fortify || 0) - 1);   // la barricade cède
+        }
         e.state = ST.ATTACK;
         return;
       }
@@ -629,6 +809,30 @@ export class Sim {
   /* ═══ IA — civil à l'intérieur ════════════════════════ */
   aiIndoor(e, dt) {
     e.state = ST.INDOOR;
+    const b = e.home;
+
+    /* ── Barricader la maison ──
+       Tant qu'on est inquiet et enfermé, on cloue des planches : chaque
+       niveau rallonge d'autant le temps qu'un zombie met à entrer. */
+    if (b && !b.destroyed && e.alert > 0.3 && (b.fortify || 0) < FORTIFY.max) {
+      b.fortify = Math.min(FORTIFY.max, (b.fortify || 0) + FORTIFY.rate * dt);
+    }
+
+    /* ── Tirer par la fenêtre ──
+       La ligne de vue part de la façade, pas du centre du bâtiment : depuis
+       le centroïde, le bâtiment lui-même bloquerait tous les tirs. */
+    if (b && e.weapon && (e.mag > 0 || e.reserve > 0) && this.time - (e._winT || -99) > 1.1) {
+      const win = this.doorOf(b);
+      if (win) {
+        const r = this.hash.nearest(win.x, win.y, FORTIFY.windowRange, o =>
+          o.kind === KIND.ZOM && o.alive && this.grid.hasLOS(win.x, win.y, o.x, o.y));
+        if (r) {
+          e._winT = this.time;
+          this.face(e, r.e.x, r.e.y);
+          this.tryFire(e, r.e, r.d, win.x, win.y);
+        }
+      }
+    }
 
     /* Un hélicoptère posé à portée fait sortir les habitants : c'est le
        principal moyen de vider un quartier. */
@@ -692,6 +896,43 @@ export class Sim {
       }
     }
 
+    /* ── Rejoindre un véhicule réservé ── */
+    if (e.vehTarget) {
+      const v = e.vehTarget;
+      if (!v.alive || v.state !== 'loading' || seatsLeft(v) <= 0) { e.vehTarget = null; }
+      else {
+        const d = dist(e.x, e.y, v.x, v.y);
+        if (d < 3) { embark(this, e, v); e.vehTarget = null; return; }
+        e.state = ST.BOARDVEH;
+        this.moveToward(e, v.x, v.y, dt, e.runSpeed, 0.7);
+        return;
+      }
+    }
+
+    /* ── Sous escorte militaire : on suit le dispositif ── */
+    if (e.escort && e.escort.leader && e.escort.leader.alive) {
+      const L = e.escort.leader;
+      const d = dist(e.x, e.y, L.x, L.y);
+      if (d > 110) { e.escort = null; }        // décroché, on se débrouille
+      else {
+        e.state = ST.FOLLOW;
+        e.alert = Math.max(0, e.alert - dt * 0.22);   // la présence armée rassure
+        if (d > 11) {
+          this.moveToward(e, L.x, L.y, dt, (threat && td < 40) ? e.runSpeed : e.baseSpeed * 1.15, 0.4);
+        } else {
+          this.holdPosition(e, L.x, L.y, 11, dt);
+        }
+        return;
+      }
+    }
+
+    /* ── Prendre une voiture pour fuir ── */
+    if (this.params.useVehicles && e.alert > 0.9 && !e.escort && this.time - (e._carT || -99) > 8) {
+      e._carT = this.time;
+      const v = this.findVehicle(e, 55, 'civ');
+      if (v && this.claimVehicle(v, e)) return;
+    }
+
     /* Fuite */
     if (threat && td < 55) {
       e.state = ST.FLEE;
@@ -700,12 +941,21 @@ export class Sim {
         e._screamT = this.time;
         this.emitNoise(e.x, e.y, CFG.NOISE.scream * 0.7, 0.5);
       }
-      /* direction opposée, corrigée par les obstacles */
-      let ax = e.x - threat.x, ay = e.y - threat.y;
-      const l = Math.hypot(ax, ay) || 1; ax /= l; ay /= l;
-      const goal = this.freeDirection(e, ax, ay, 26);
-      this.steer(e, goal.x, goal.y, dt, e.runSpeed);
+      /* On ne fuit plus bêtement à l'opposé : on part vers le secteur le plus
+         calme, en restant avec les autres — un groupe se disperse moins. */
+      const dir = this.escapeDirection(e, threat);
+      this.steer(e, dir.x, dir.y, dt, e.runSpeed);
       return;
+    }
+
+    /* ── Regroupement : un civil inquiet cherche du monde ── */
+    if (e.alert > 0.45) {
+      const rally = this.rallyPoint(e);
+      if (rally) {
+        e.state = ST.GOTO;
+        this.moveToward(e, rally.x, rally.y, dt, e.baseSpeed * 1.2, 0.3);
+        return;
+      }
     }
 
     /* Retour au calme : rentrer chez soi si possible */
@@ -729,6 +979,107 @@ export class Sim {
 
     e.state = ST.WANDER;
     this.wander(e, dt, e.baseSpeed * (0.6 + e.alert * 0.5));
+  }
+
+  /**
+   * Direction de fuite : on échantillonne autour de soi et on retient le cap
+   * qui éloigne de la menace ET mène vers le secteur le moins dangereux, en
+   * tenant compte des camarades proches. Fuir en ligne droite à l'opposé du
+   * zombie envoyait régulièrement les civils dans une impasse ou dans la horde
+   * suivante.
+   */
+  escapeDirection(e, threat) {
+    /* Échantillonner 12 directions coûte cher : on garde le cap choisi une
+       demi-seconde. Recalculer à chaque tick multipliait par trois le temps
+       de simulation sans rien changer au comportement observé. */
+    if (e._escDir && this.time < e._escT) return e._escDir;
+    e._escT = this.time + rand(0.45, 0.8);
+
+    let bx = 0, by = 0, n = 0;
+    this.hash.query(e.x, e.y, 30, (o) => {
+      if (o === e || !o.alive) return;
+      if (o.kind === KIND.CIV || o.kind === KIND.MIL || o.kind === KIND.POL) { bx += o.x; by += o.y; n++; }
+    });
+    const mate = n ? { x: bx / n - e.x, y: by / n - e.y } : null;
+
+    let best = null, bestScore = -Infinity;
+    const off = rand(0, Math.PI / 4);          // décalage : évite les 8 mêmes caps
+    for (let i = 0; i < 8; i++) {
+      const a = off + (i / 8) * Math.PI * 2;
+      const cx = Math.cos(a), cy = Math.sin(a);
+      const probe = 26;
+      if (!this.pf.clearLine(e.x, e.y, e.x + cx * 10, e.y + cy * 10)) continue;
+      const px = e.x + cx * probe, py = e.y + cy * probe;
+      let score = -this.threatAt(px, py) * 2.2;
+      if (threat) {
+        const away = ((e.x - threat.x) * cx + (e.y - threat.y) * cy) /
+                     (dist(e.x, e.y, threat.x, threat.y) || 1);
+        score += away * 3;                      // s'éloigner reste prioritaire
+      }
+      if (mate) {
+        const l = Math.hypot(mate.x, mate.y) || 1;
+        score += ((mate.x / l) * cx + (mate.y / l) * cy) * 0.8;   // rester groupé
+      }
+      if (this.base) {
+        const d = dist(px, py, this.base.x, this.base.y);
+        score += clamp(3 - d / 200, 0, 3);      // et gagner la base si elle existe
+      }
+      if (score > bestScore) { bestScore = score; best = { x: cx, y: cy }; }
+    }
+    if (!best) {
+      const ax = e.x - (threat ? threat.x : e.x - 1), ay = e.y - (threat ? threat.y : e.y);
+      const l = Math.hypot(ax, ay) || 1;
+      best = this.freeDirection(e, ax / l, ay / l, 26);
+    }
+    e._escDir = best;
+    return best;
+  }
+
+  /** Point de ralliement d'un civil isolé : la base, une escorte, un attroupement. */
+  rallyPoint(e) {
+    if (this.base && dist(e.x, e.y, this.base.x, this.base.y) < 500)
+      return { x: this.base.x, y: this.base.y };
+    let best = null, bd = 160;
+    for (const sq of this.squads) {
+      if (!sq.leader) continue;
+      const d = dist(e.x, e.y, sq.leader.x, sq.leader.y);
+      if (d < bd) { bd = d; best = { x: sq.leader.x, y: sq.leader.y }; }
+    }
+    return best;
+  }
+
+  /** Un civil réquisitionne une voiture et attend quelques secondes ses voisins. */
+  claimVehicle(v, e) {
+    const dest = this.base ? { x: this.base.x, y: this.base.y } : this.escapePoint(v.x, v.y);
+    if (!dest) return false;
+    const road = this.grid.nearestRoad(dest.x, dest.y, 60);
+    if (!road || this.grid.roadCompAt(v.x, v.y) !== this.grid.roadCompAt(road.x, road.y)) return false;
+
+    v.state = 'loading';
+    v.claimT = this.time + 10;
+    v.destWanted = road;
+    v.escape = !this.base;
+    e.vehTarget = v;
+    /* On embarque aussi les proches : on ne part pas seul si on peut sauver du monde */
+    this.hash.query(e.x, e.y, 28, (o) => {
+      if (o === e || o.kind !== KIND.CIV || !o.alive || o.indoor || o.vehicle || o.vehTarget) return;
+      if (v.occupants.length + 1 >= v.capacity) return;
+      o.vehTarget = v;
+    });
+    return true;
+  }
+
+  /** Sortie de zone la plus proche par la route (fuite hors du terrain). */
+  escapePoint(x, y) {
+    const f = this.frame, g = this.grid;
+    const cands = [
+      { x, y: 6 }, { x, y: f.height - 6 }, { x: 6, y }, { x: f.width - 6, y },
+    ].sort((a, b) => dist2(a.x, a.y, x, y) - dist2(b.x, b.y, x, y));
+    for (const c of cands) {
+      const r = g.nearestRoad(c.x, c.y, 80);
+      if (r) return r;
+    }
+    return null;
   }
 
   /* ═══ IA — gendarme / militaire ═══════════════════════ */
@@ -782,14 +1133,19 @@ export class Sim {
         }
         return;
       }
-      /* pas de vue : on se rapproche */
-      e.state = ST.SEEK;
-      this.moveToward(e, e.target.x, e.target.y, dt, e.baseSpeed * 1.15, 0.7);
-      return;
+      /* Pas de ligne de tir : on se rapproche — mais jamais au point de
+         quitter son escouade ou d'abandonner les civils escortés. */
+      const anchored = e.squad && (e.squad.escorted.length || e.squad.order?.type === ORDER.BLOCKADE);
+      if (!anchored && this.nearLeader(e, SQUAD.leash)) {
+        e.state = ST.SEEK;
+        this.moveToward(e, e.target.x, e.target.y, dt, e.baseSpeed * 1.15, 0.7);
+        return;
+      }
+      e.target = null;      // hors de portée du dispositif : on laisse filer
     }
 
-    /* Bruit récent */
-    if (this.time < e.heardT) {
+    /* Bruit récent — mais on ne quitte pas son escouade pour un bruit */
+    if (this.time < e.heardT && this.nearLeader(e, SQUAD.leash)) {
       e.state = ST.SEEK;
       if (dist(e.x, e.y, e.heardX, e.heardY) > 5) {
         this.moveToward(e, e.heardX, e.heardY, dt, e.baseSpeed * 1.1, 0.4);
@@ -798,7 +1154,10 @@ export class Sim {
       e.heardT = 0;
     }
 
-    /* Patrouille */
+    /* ── Vie d'escouade ── */
+    if (e.squad) { this.squadMove(e, dt); return; }
+
+    /* Patrouille individuelle (unité isolée) */
     if (e.patrol) {
       e.state = ST.PATROL;
       if (!e.patrolWP || dist(e.x, e.y, e.patrolWP.x, e.patrolWP.y) < 5 || e.pathFails > 2) {
@@ -813,6 +1172,99 @@ export class Sim {
     this.wander(e, dt, e.baseSpeed * 0.7);
   }
 
+  /** Un équipier est-il encore à portée de son chef ? */
+  nearLeader(e, range) {
+    const L = e.squad?.leader;
+    if (!L || L === e) return true;
+    return dist(e.x, e.y, L.x, L.y) < range;
+  }
+
+  /**
+   * Déplacement d'un membre d'escouade : le chef mène vers l'objectif fixé
+   * par le commandement, les équipiers tiennent leur place en formation.
+   * C'est ce qui empêche les militaires de se disperser un par un.
+   */
+  squadMove(e, dt) {
+    const sq = e.squad;
+    const isLeader = sq.leader === e;
+
+    /* Embarquement en cours */
+    if (e.vehTarget) {
+      const v = e.vehTarget;
+      if (!v.alive || v.state !== 'loading' || seatsLeft(v) <= 0) e.vehTarget = null;
+      else {
+        const d = dist(e.x, e.y, v.x, v.y);
+        if (d < 3) { embark(this, e, v); e.vehTarget = null; return; }
+        e.state = ST.BOARDVEH;
+        this.moveToward(e, v.x, v.y, dt, e.runSpeed, 0.7);
+        return;
+      }
+    }
+
+    /* Barrage en cours de montage : on reste dessus et on le construit */
+    if (sq.order?.type === ORDER.BLOCKADE) {
+      const d = dist(e.x, e.y, sq.order.x, sq.order.y);
+      if (d < 13) {
+        e.state = sq.order.bl && !sq.order.bl.built ? ST.BUILD : ST.GARRISON;
+        /* face à la route, dos au barrage */
+        if (e.senseT > 0.3) this.face(e, sq.order.x + rand(-30, 30), sq.order.y + rand(-30, 30));
+        this.holdPosition(e, sq.order.x, sq.order.y, 11, dt);
+        return;
+      }
+      e.state = ST.GOTO;
+      this.moveToward(e, sq.order.x, sq.order.y, dt, e.baseSpeed * 1.15, 0.6);
+      return;
+    }
+
+    /* Ravitaillement */
+    if (sq.order?.type === ORDER.RESUPPLY) {
+      e.state = ST.RESUPPLY;
+      const d = dist(e.x, e.y, sq.order.x, sq.order.y);
+      if (d < 4) {
+        const crate = this.nearestCrate(e);
+        if (crate && dist(e.x, e.y, crate.x, crate.y) < 3) this.useCrate(e, crate);
+        this.holdPosition(e, sq.order.x, sq.order.y, 8, dt);
+        return;
+      }
+      this.moveToward(e, sq.order.x, sq.order.y, dt, e.runSpeed * 0.9, 0.8);
+      return;
+    }
+
+    /* Le chef mène vers l'ancre décidée par l'escouade */
+    if (isLeader) {
+      const a = sq.anchor;
+      if (!a) { e.state = ST.PATROL; this.wander(e, dt, e.baseSpeed * 0.6); return; }
+      const d = dist(e.x, e.y, a.x, a.y);
+      e.state = sq.escorted.length ? ST.ESCORT : ST.GOTO;
+      if (d < 6) { this.holdPosition(e, a.x, a.y, 8, dt); return; }
+      /* En escorte on marche au pas des civils, pas au pas de course. */
+      const spd = sq.escorted.length ? e.baseSpeed * 0.92 : e.baseSpeed * 1.1;
+      this.moveToward(e, a.x, a.y, dt, spd, 0.5);
+      return;
+    }
+
+    /* Les équipiers rejoignent leur place */
+    const slot = slotPosition(sq, e);
+    if (!slot) { e.state = ST.PATROL; this.wander(e, dt, e.baseSpeed * 0.6); return; }
+    const d = dist(e.x, e.y, slot.x, slot.y);
+    e.state = sq.escorted.length ? ST.ESCORT : ST.FORMUP;
+    if (d < 3.5) { this.holdPosition(e, slot.x, slot.y, 4, dt); return; }
+    /* plus on est loin de sa place, plus on presse le pas */
+    const spd = d > SQUAD.regroup ? e.runSpeed : e.baseSpeed * 1.1;
+    this.moveToward(e, slot.x, slot.y, dt, spd, d > SQUAD.leash ? 0.7 : 0.35);
+  }
+
+  /** Tient une position : petits ajustements sans s'éloigner. */
+  holdPosition(e, x, y, radius, dt) {
+    const d = dist(e.x, e.y, x, y);
+    if (d > radius) {
+      this.steer(e, (x - e.x) / d, (y - e.y) / d, dt, e.baseSpeed * 0.8);
+      return;
+    }
+    /* séparation douce pour ne pas s'empiler */
+    this.steer(e, rand(-1, 1) * 0.15, rand(-1, 1) * 0.15, dt, e.baseSpeed * 0.12);
+  }
+
   randomPointInRect(r) {
     for (let i = 0; i < 30; i++) {
       const x = rand(r.x0, r.x1), y = rand(r.y0, r.y1);
@@ -822,7 +1274,9 @@ export class Sim {
   }
 
   /* ═══ Tir ═════════════════════════════════════════════ */
-  tryFire(e, target, d) {
+  /** `ox,oy` : origine du tir, distincte de la position quand on tire depuis
+      une fenêtre (la ligne de vue part alors de la façade). */
+  tryFire(e, target, d, ox = e.x, oy = e.y) {
     const w = WEAPON[e.weapon];
     if (!w || e.reloadT > 0) return;
     if (e.mag <= 0) { this.startReload(e); return; }
@@ -839,11 +1293,11 @@ export class Sim {
     if (e.alert > 1.3) hitP *= 0.85;                    // stress
 
     /* Un obstacle peut absorber la balle */
-    if (!this.grid.hasLOS(e.x, e.y, target.x, target.y)) hitP = 0;
+    if (!this.grid.hasLOS(ox, oy, target.x, target.y)) hitP = 0;
 
     const hit = Math.random() < hitP;
     this.effects.push({
-      type: 'tracer', x0: e.x, y0: e.y,
+      type: 'tracer', x0: ox, y0: oy,
       x1: hit ? target.x : target.x + rand(-4, 4), y1: hit ? target.y : target.y + rand(-4, 4),
       t: 0.09, kind: e.kind,
     });
@@ -851,7 +1305,7 @@ export class Sim {
        deux fois par seconde et par tireur suffit à alerter le voisinage. */
     if (this.time - (e.noiseT || -9) > 0.5) {
       e.noiseT = this.time;
-      this.emitNoise(e.x, e.y, CFG.NOISE[w.noise], 1);
+      this.emitNoise(ox, oy, CFG.NOISE[w.noise], 1);
     }
 
     if (hit) {
@@ -1163,6 +1617,19 @@ export class Sim {
         this.damage(e, 400 * f, null);
       }
     }
+    /* Véhicules pris dans le souffle */
+    for (const v of this.vehicles) {
+      if (!v.alive) continue;
+      const d = dist(v.x, v.y, x, y);
+      if (d > r * 1.2) continue;
+      v.hp -= 500 * clamp(1 - d / (r * 1.2), 0, 1);
+      if (v.hp <= 0) {
+        for (const o of v.occupants.slice()) { disembark(this, o, v); this.killOutright(o, 1.4); }
+        v.alive = false; v.driver = null; v.v = 0;
+        v.state = 'wreck';                 // l'épave reste et obstrue la chaussée
+      }
+    }
+
     /* Les occupants des bâtiments touchés meurent avec eux */
     for (const b of this.buildings) {
       if (dist(b.c.x, b.c.y, x, y) > r) continue;
@@ -1226,16 +1693,194 @@ export class Sim {
     e.alert = Math.max(e.alert, 0.6);
   }
 
-  /* ═══ Ordres ══════════════════════════════════════════ */
-  assignPatrol(rect, kinds = [KIND.MIL], maxUnits = 999) {
-    const cx = (rect.x0 + rect.x1) / 2, cy = (rect.y0 + rect.y1) / 2;
-    const cands = this.entities
-      .filter(e => e.alive && kinds.includes(e.kind))
-      .sort((a, b) => dist2(a.x, a.y, cx, cy) - dist2(b.x, b.y, cx, cy))
-      .slice(0, maxUnits);
-    for (const e of cands) { e.patrol = rect; e.patrolWP = null; e.path = null; }
-    return cands.length;
+  /* ═══ Escouades, véhicules, barrages, base ═══════════ */
+
+  updateSquadOrders(dt) {
+    updateSquads(this, dt);
+    this._vehT = (this._vehT || 0) - dt;
+    if (this._vehT > 0) return;
+    this._vehT = 2;
+    for (const sq of this.squads) this.maybeBoardVehicle(sq);
   }
+
+  updateVehicles(dt) {
+    for (const v of this.vehicles) {
+      if (!v.alive) continue;
+
+      /* Embarquement : on patiente un peu pour ne pas partir à vide */
+      if (v.state === 'loading') {
+        if (this.time > v.claimT || seatsLeft(v) <= 0) {
+          if (v.occupants.length &&
+              driveTo(this, v, v.destWanted.x, v.destWanted.y, v.escape ? 'escape' : 'unload')) {
+            this.releaseClaims(v);
+          } else {
+            v.state = 'parked';
+            this.releaseClaims(v);
+          }
+        }
+      }
+
+      /* Sortie de zone réussie : les occupants sont sauvés */
+      if (v.state === 'escaped') {
+        for (const o of v.occupants) {
+          o.vehicle = null;
+          o.state = ST.EVACUATED;
+          if (o.home) { const k = o.home.occupants.indexOf(o); if (k >= 0) o.home.occupants.splice(k, 1); }
+        }
+        this.stats.evac += v.occupants.length;
+        v.occupants.length = 0;
+        v.driver = null;
+        v.alive = false; v.gone = true;   // sorti de la zone : on le retire
+        continue;
+      }
+
+      if (v.state === 'unloading') {
+        updateUnloading(this, v, dt);
+        if (v.state === 'parked') {
+          for (const sq of this.squads) if (sq.vehicle === v) sq.vehicle = null;
+        }
+      }
+      updateVehicle(this, v, dt);
+      /* Le moteur s'entend en continu, mais la propagation du bruit balaie un
+         large rayon : deux fois par seconde suffit (voir heliNoise). */
+      if (v.v > 3) {
+        v.noiseT = (v.noiseT || 0) - dt;
+        if (v.noiseT <= 0) { v.noiseT = 0.5; this.emitNoise(v.x, v.y, 90 + v.v * 6, 0.3); }
+      }
+
+      /* Camion de ravitaillement : distribue autour de lui */
+      if (v.type === 'supply' && v.ammo > 0 && v.v < 1) {
+        this.hash.query(v.x, v.y, 12, (e) => {
+          if (!e.alive || e.kind === KIND.ZOM || !e.weapon || v.ammo <= 0) return;
+          const given = this.topUpAmmo(e, BASE.resupplyRate * dt);
+          v.ammo -= given;
+        });
+      }
+    }
+    /* Les véhicules sortis de la zone disparaissent ; les épaves restent. */
+    for (let i = this.vehicles.length - 1; i >= 0; i--)
+      if (this.vehicles[i].gone) this.vehicles.splice(i, 1);
+  }
+
+  /** Complète la dotation d'une unité, retourne le nombre de cartouches cédées. */
+  topUpAmmo(e, amount) {
+    const w = WEAPON[e.weapon];
+    if (!w) return 0;
+    const full = w.mag + w.reserve;
+    const cur = e.mag + e.reserve;
+    if (cur >= full) return 0;
+    const give = Math.min(amount, full - cur);
+    e.reserve += give;
+    return give;
+  }
+
+  updateBlockades(dt) {
+    for (const bl of this.blockades) {
+      if (bl.built) continue;
+      /* La construction n'avance que si des hommes sont sur place. */
+      let workers = 0;
+      this.hash.query(bl.x, bl.y, 15, (e) => {
+        if (e.alive && (e.kind === KIND.MIL || e.kind === KIND.POL) && !e.vehicle) workers++;
+      });
+      if (!workers) continue;
+      bl.progress += dt * Math.min(workers, 6);
+      if (bl.progress >= BLOCKADE.buildTime) {
+        bl.built = true;
+        this.grid.addBlockade(bl.x, bl.y, BLOCKADE.halfWidth);
+        this._fields.clear();
+        this.emitNoise(bl.x, bl.y, 80, 0.3);
+      }
+    }
+  }
+
+  updateBase(dt) {
+    const b = this.base;
+    if (!b) return;
+    let sheltered = 0;
+    this.hash.query(b.x, b.y, b.r, (e) => {
+      if (!e.alive || e.kind === KIND.ZOM) return;
+      if (e.kind === KIND.CIV) sheltered++;
+      if (e.weapon) b.ammoGiven += this.topUpAmmo(e, BASE.resupplyRate * dt);
+      if (e.hp < e.maxHp) e.hp = Math.min(e.maxHp, e.hp + BASE.healRate * dt);
+      e.alert = Math.max(0, e.alert - dt * 0.4);      // on souffle, à l'abri
+    });
+    this.stats.sheltered = sheltered;
+  }
+
+  /** Annule les réservations pointant vers ce véhicule. */
+  releaseClaims(v) {
+    for (const e of this.entities) if (e.vehTarget === v) e.vehTarget = null;
+  }
+
+  /**
+   * Une escouade qui doit franchir une longue distance monte en véhicule,
+   * avec les civils qu'elle escorte. C'est ce qui rend les camions utiles.
+   */
+  maybeBoardVehicle(sq) {
+    if (!this.params.useVehicles || sq.vehicle) return false;
+    const L = sq.leader;
+    if (!L || !sq.anchor) return false;
+    if (dist(L.x, L.y, sq.anchor.x, sq.anchor.y) < 220) return false;
+
+    const v = this.findVehicle(L, 55, 'mil');
+    if (!v) return false;
+    const road = this.grid.nearestRoad(sq.anchor.x, sq.anchor.y, 90);
+    if (!road) return false;
+    if (this.grid.roadCompAt(v.x, v.y) !== this.grid.roadCompAt(road.x, road.y)) return false;
+
+    v.state = 'loading';
+    v.claimT = this.time + 14;
+    v.destWanted = road;
+    v.escape = false;
+    sq.vehicle = v;
+    for (const m of sq.members) if (!m.vehicle) m.vehTarget = v;
+    for (const c of sq.escorted) if (c.alive && !c.vehicle) c.vehTarget = v;
+    return true;
+  }
+
+  /** Véhicule libre le plus proche, utilisable par ce type d'unité. */
+  findVehicle(e, maxDist = 70, faction = null) {
+    let best = null, bd = maxDist;
+    for (const v of this.vehicles) {
+      if (!vehicleFree(v)) continue;
+      if (faction && v.spec.faction !== faction) continue;
+      if (seatsLeft(v) <= 0) continue;
+      const d = dist(e.x, e.y, v.x, v.y);
+      if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+  }
+
+  /* ═══ Ordres ══════════════════════════════════════════ */
+  /** Affecte les escouades les plus proches à une zone de patrouille. */
+  assignPatrol(rect, kinds = [KIND.MIL, KIND.POL], maxSquads = 3) {
+    const cx = (rect.x0 + rect.x1) / 2, cy = (rect.y0 + rect.y1) / 2;
+    const sqs = this.squads
+      .filter(s => s.leader && kinds.includes(s.kind))
+      .sort((a, b) => dist2(a.leader.x, a.leader.y, cx, cy) - dist2(b.leader.x, b.leader.y, cx, cy))
+      .slice(0, maxSquads);
+    for (const sq of sqs) {
+      sq.order = { type: ORDER.PATROL, rect };
+      sq.prevOrder = null;
+      sq.anchor = this.randomPointInRect(rect);
+    }
+    return sqs.reduce((n, s) => n + s.members.length, 0);
+  }
+
+  /** Ordonne un ratissage : l'escouade la plus proche va nettoyer le secteur. */
+  orderSweep(x, y) {
+    const sq = this.squads
+      .filter(s => s.leader)
+      .sort((a, b) => dist2(a.leader.x, a.leader.y, x, y) - dist2(b.leader.x, b.leader.y, x, y))[0];
+    if (!sq) return null;
+    sq.order = { type: ORDER.SWEEP, x, y };
+    sq.prevOrder = null;
+    sq.anchor = { x, y };
+    return sq;
+  }
+
+  /** Barrage routier : délègue à l'escouade la plus proche. */
+  orderBlockadeAt(x, y) { return orderBlockade(this, x, y); }
 
   /* ═══ Effets ══════════════════════════════════════════ */
   addBlood(x, y, scale = 1, color = null) {

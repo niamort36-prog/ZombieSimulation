@@ -28,6 +28,7 @@
     <div class="stat" title="Gendarmes"><i class="dot pol"></i><span id="hud-pol">0</span></div>
     <div class="stat" title="Militaires"><i class="dot mil"></i><span id="hud-mil">0</span></div>
     <div class="stat" title="Zombies"><i class="dot zom"></i><span id="hud-zom">0</span></div>
+    <div class="stat" title="Civils à l'abri dans la base"><i class="dot base"></i><span id="hud-shelter">0</span></div>
     <div class="stat" title="Évacués"><i class="dot evac"></i><span id="hud-evac">0</span></div>
     <div class="stat" title="Morts"><i class="dot dead"></i><span id="hud-dead">0</span></div>
     <div class="stat clock" title="Temps de simulation"><span id="hud-time">00:00</span></div>
@@ -92,6 +93,27 @@
     </div>
   </section>
 
+  <!-- ─── 2 bis. FORCES & LOGISTIQUE ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">⚑</span>Forces &amp; logistique<i class="chev"></i></h2>
+    <div class="body">
+      <p class="hint">Les militaires opèrent en escouades : ils regroupent les civils, les escortent vers la base ou le secteur le plus calme, et montent des barrages. Ils ne roulent que sur les routes.</p>
+      <div class="grid2">
+        <label class="fld"><span>Voitures civiles <b id="v-cars">40</b></span>
+          <input type="range" id="s-cars" min="0" max="400" step="5" value="40"></label>
+        <label class="fld"><span>Camions militaires <b id="v-trucks">3</b></span>
+          <input type="range" id="s-trucks" min="0" max="30" step="1" value="3"></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="opt-vehicles" checked> Autoriser l'usage des véhicules</label>
+      <label class="chk"><input type="checkbox" id="opt-escort" checked> Escorte automatique des civils</label>
+      <div id="squad-info" class="readout">Aucune escouade</div>
+      <div class="row">
+        <button id="btn-garrison" class="btn ghost">🏕️ Tous à la base</button>
+        <button id="btn-free" class="btn ghost">↺ Libre</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ─── 3. ZOMBIES ─── -->
   <section class="card" data-open="1">
     <h2><span class="num">3</span>Zombies<i class="chev"></i></h2>
@@ -139,12 +161,15 @@
     <div class="body">
       <p class="hint">Sélectionne un outil, puis clique sur la carte.</p>
       <div class="tools">
-        <button class="tool" data-tool="heli"    title="Zone d'atterrissage hélicoptère">🚁<span>Évac</span></button>
-        <button class="tool" data-tool="strike"  title="Frappe aérienne">💥<span>Frappe</span></button>
-        <button class="tool" data-tool="drop"    title="Parachutage d'armes et munitions">📦<span>Largage</span></button>
-        <button class="tool" data-tool="patrol"  title="Assigner une zone de patrouille (glisser)">🎯<span>Patrouille</span></button>
-        <button class="tool" data-tool="spawnz"  title="Placer des zombies">🧟<span>Placer Z</span></button>
-        <button class="tool" data-tool="none"    title="Curseur">🖱️<span>Aucun</span></button>
+        <button class="tool" data-tool="base"    title="Définir la base : ravitaillement, soins, refuge des civils (6)">🏕️<span>Base</span></button>
+        <button class="tool" data-tool="block"   title="Barrage routier : l'escouade la plus proche va le monter (7)">🚧<span>Barrage</span></button>
+        <button class="tool" data-tool="sweep"   title="Envoyer l'escouade la plus proche ratisser le secteur (8)">⚔️<span>Ratisser</span></button>
+        <button class="tool" data-tool="heli"    title="Zone d'atterrissage hélicoptère (1)">🚁<span>Évac</span></button>
+        <button class="tool" data-tool="strike"  title="Frappe aérienne (2)">💥<span>Frappe</span></button>
+        <button class="tool" data-tool="drop"    title="Parachutage d'armes et munitions (3)">📦<span>Largage</span></button>
+        <button class="tool" data-tool="patrol"  title="Assigner une zone de patrouille (glisser) (4)">🎯<span>Patrouille</span></button>
+        <button class="tool" data-tool="spawnz"  title="Placer des zombies (5)">🧟<span>Placer Z</span></button>
+        <button class="tool" data-tool="none"    title="Curseur (Échap)">🖱️<span>Aucun</span></button>
       </div>
 
       <div class="grid2">
@@ -169,6 +194,7 @@
     <div class="body">
       <label class="chk"><input type="checkbox" id="opt-los"> Cônes de vision</label>
       <label class="chk"><input type="checkbox" id="opt-paths"> Trajectoires</label>
+      <label class="chk"><input type="checkbox" id="opt-squads" checked> Liens d'escouade et d'escorte</label>
       <label class="chk"><input type="checkbox" id="opt-names" checked> Barres de vie / munitions</label>
       <label class="chk"><input type="checkbox" id="opt-blood" checked> Traces au sol</label>
       <label class="fld"><span>Taille des sprites <b id="v-sprite">1.0</b>×</span>

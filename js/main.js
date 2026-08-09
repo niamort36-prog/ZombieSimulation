@@ -112,6 +112,14 @@ map.on('mouseup', ev => {
 });
 
 const patrolBoxes = L.layerGroup().addTo(map);
+let baseMarker = null;
+function drawBaseMarker(latlng) {
+  if (baseMarker) map.removeLayer(baseMarker);
+  baseMarker = L.circle(latlng, {
+    radius: sim.base ? sim.base.r : 70,
+    color: '#7ee787', weight: 1, fillOpacity: 0.03, interactive: false,
+  }).addTo(map);
+}
 function drawPatrolBox(b) {
   const r = L.rectangle(b, { color: '#7ee787', weight: 1.5, fillOpacity: 0.05, dashArray: '4 6', interactive: false });
   patrolBoxes.addLayer(r);
@@ -190,6 +198,7 @@ function updatePopEstimate() {
 function startSim() {
   sim.reset();
   patrolBoxes.clearLayers();
+  if (baseMarker) { map.removeLayer(baseMarker); baseMarker = null; }
   estimatePopulation(sim.buildings, sim.frame, sim.params.density);
   sim.populate();
   renderer.terrainVersion = -1;
@@ -209,11 +218,14 @@ function setTool(t) {
   tool = t;
   $$('.tool').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   document.body.classList.toggle('tool-active', t !== 'none');
-  if (t === 'patrol') toast('Trace un rectangle : les unités les plus proches y patrouilleront.');
+  if (t === 'patrol') toast('Trace un rectangle : les escouades les plus proches y patrouilleront.');
   else if (t === 'heli') toast('Clique pour désigner une zone d\'atterrissage.');
   else if (t === 'strike') toast('Clique pour désigner un point d\'impact.');
   else if (t === 'drop') toast('Clique pour larguer armes et munitions.');
   else if (t === 'spawnz') toast('Clique pour lâcher un groupe de zombies.');
+  else if (t === 'base') toast('Clique pour installer la base : les civils y seront conduits, les soldats y refont le plein.');
+  else if (t === 'block') toast('Clique sur une route : une escouade ira monter le barrage.');
+  else if (t === 'sweep') toast('Clique sur un secteur à nettoyer.');
 }
 
 map.on('click', ev => {
@@ -222,6 +234,26 @@ map.on('click', ev => {
   if (!sim.frame.contains(w.x, w.y)) { toast('Point hors de la zone de jeu.', 'warn'); return; }
 
   switch (tool) {
+    case 'base': {
+      const b = sim.setBase(w.x, w.y);
+      if (b) {
+        drawBaseMarker(ev.latlng);
+        toast(`Base établie : ravitaillement, soins et refuge dans un rayon de ${b.r} m.`);
+      } else toast('Impossible d\'installer la base ici.', 'warn');
+      break;
+    }
+    case 'block': {
+      const bl = sim.orderBlockadeAt(w.x, w.y);
+      if (bl) toast('Barrage ordonné — l\'escouade la plus proche part le monter.');
+      else toast('Aucune route exploitable ici, ou aucune escouade disponible.', 'warn');
+      break;
+    }
+    case 'sweep': {
+      const sq = sim.orderSweep(w.x, w.y);
+      if (sq) toast(`Ratissage ordonné à une escouade de ${sq.members.length} hommes.`);
+      else toast('Aucune escouade disponible.', 'warn');
+      break;
+    }
     case 'heli': {
       const h = sim.callHeli(w.x, w.y);
       if (h) { toast(`Hélicoptère en approche — capacité ${h.capacity}.`); opsStatus(); }
@@ -254,7 +286,36 @@ function opsStatus() {
   if (sim.strikes.length) parts.push(`${sim.strikes.length} frappe(s) en attente`);
   const crates = sim.crates.filter(c => c.uses > 0).length;
   if (crates) parts.push(`${crates} caisse(s)`);
+  const built = sim.blockades.filter(b => b.built).length;
+  if (sim.blockades.length) parts.push(`${built}/${sim.blockades.length} barrage(s)`);
+  if (sim.base) parts.push('base établie');
   $('#ops-status').textContent = parts.length ? parts.join(' · ') : 'Aucune opération en cours';
+}
+
+/** Résumé de l'état des escouades (effectif, mission, munitions). */
+function squadStatus() {
+  const el = $('#squad-info');
+  if (!sim.squads.length) { el.textContent = 'Aucune escouade'; return; }
+  const label = {
+    patrol: 'patrouille', escort: 'escorte', blockade: 'barrage',
+    garrison: 'base', resupply: 'ravitaillement', sweep: 'ratissage',
+  };
+  const byMission = {};
+  let men = 0, civs = 0, ammo = 0;
+  for (const sq of sim.squads) {
+    const m = sq.order ? (label[sq.order.type] || sq.order.type) : 'initiative';
+    byMission[m] = (byMission[m] || 0) + 1;
+    men += sq.members.length;
+    civs += sq.escorted.filter(c => c.alive).length;
+    for (const s of sq.members) ammo += s.mag + s.reserve;
+  }
+  const veh = sim.vehicles.filter(v => v.alive).length;
+  const rolling = sim.vehicles.filter(v => v.alive && v.v > 1).length;
+  el.innerHTML =
+    `<b>${sim.squads.length}</b> escouades · <b>${men}</b> hommes · <b>${civs}</b> civils encadrés<br>` +
+    Object.entries(byMission).map(([k, v]) => `${v}× ${k}`).join(' · ') + '<br>' +
+    `<span style="opacity:.7">${Math.round(ammo / Math.max(1, men))} cartouches/homme · ` +
+    `${veh} véhicules dont ${rolling} en mouvement</span>`;
 }
 
 /* ═══ Interface : liaisons ════════════════════════════ */
@@ -282,6 +343,8 @@ bindSlider('#s-zfastspd', '#v-zfastspd', 'zFast', v => v.toFixed(1));
 bindSlider('#s-turn', '#v-turn', 'turnDelay');
 bindSlider('#s-zsight', '#v-zsight', 'zSight');
 bindSlider('#s-zhear', '#v-zhear', 'zHear');
+bindSlider('#s-cars', '#v-cars', 'civCars');
+bindSlider('#s-trucks', '#v-trucks', 'milTrucks');
 bindSlider('#s-hcap', '#v-hcap', 'heliCap');
 bindSlider('#s-hboard', '#v-hboard', 'heliBoard', v => v.toFixed(1));
 bindSlider('#s-hwait', '#v-hwait', 'heliWait');
@@ -296,12 +359,30 @@ $('#s-sprite').addEventListener('input', e => {
 const checks = [
   ['#opt-show-terrain', 'terrain'], ['#opt-los', 'los'],
   ['#opt-paths', 'paths'], ['#opt-names', 'bars'], ['#opt-blood', 'blood'],
+  ['#opt-squads', 'squads'],
 ];
 for (const [sel, key] of checks) {
   const el = $(sel);
   renderer.opts[key] = el.checked;
   el.addEventListener('change', () => renderer.opts[key] = el.checked);
 }
+
+/* Véhicules et escorte */
+$('#opt-vehicles').addEventListener('change', e => sim.params.useVehicles = e.target.checked);
+$('#opt-escort').addEventListener('change', e => sim.params.autoEscort = e.target.checked);
+
+/* Ordres généraux */
+$('#btn-garrison').addEventListener('click', () => {
+  if (!sim.base) { toast('Installe d\'abord une base (outil 🏕️).', 'warn'); return; }
+  let n = 0;
+  for (const sq of sim.squads) { sq.order = { type: 'garrison' }; sq.prevOrder = null; n++; }
+  toast(`${n} escouade(s) rappelée(s) à la base.`);
+});
+$('#btn-free').addEventListener('click', () => {
+  for (const sq of sim.squads) { sq.order = null; sq.prevOrder = null; }
+  patrolBoxes.clearLayers();
+  toast('Escouades rendues à leur initiative : regroupement et mise à l\'abri des civils.');
+});
 
 /* Azimuts */
 $$('.az[data-az]').forEach(b => {
@@ -376,6 +457,9 @@ window.addEventListener('keydown', e => {
   else if (e.key === '3') setTool('drop');
   else if (e.key === '4') setTool('patrol');
   else if (e.key === '5') setTool('spawnz');
+  else if (e.key === '6') setTool('base');
+  else if (e.key === '7') setTool('block');
+  else if (e.key === '8') setTool('sweep');
   else if (e.key === 'f' || e.key === 'F') fitZone();
   else if (e.key === 'Escape') { setTool('none'); if (drawing) setDrawMode(false); }
 });
@@ -440,11 +524,13 @@ function frame(now) {
     $('#hud-mil').textContent = sim.stats.mil;
     $('#hud-zom').textContent = sim.stats.zom;
     $('#hud-evac').textContent = sim.stats.evac;
+    $('#hud-shelter').textContent = sim.stats.sheltered || 0;
     $('#hud-dead').textContent = sim.stats.dead;
     const t = sim.time | 0;
     $('#hud-time').textContent =
       String((t / 60) | 0).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
     opsStatus();
+    squadStatus();
   }
   requestAnimationFrame(frame);
 }

@@ -4,7 +4,7 @@
    fournit les tests de collision, de vision et de voisinage.
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, T, BLOCK_MOVE, BLOCK_SIGHT } from './config.js';
+import { CFG, T, BLOCK_MOVE, BLOCK_SIGHT, BLOCK_DRIVE } from './config.js';
 import { clamp } from './geo.js';
 
 const NDX = [1, -1, 0, 0, 1, 1, -1, -1];
@@ -46,8 +46,9 @@ export class Grid {
   /** Multiplicateur de vitesse du terrain */
   speedMul(x, y) {
     const f = this.flagAt(x, y);
-    if (f & T.RUBBLE) return 0.55;
-    if (f & T.ROAD)   return 1.15;
+    if (f & T.BLOCKADE) return 0.3;      // on escalade le barrage
+    if (f & T.RUBBLE)   return 0.55;
+    if (f & T.ROAD)     return 1.15;
     return 1;
   }
 
@@ -77,15 +78,15 @@ export class Grid {
          (sinon chaque tentative coûte des milliers d'expansions A*) ;
        • de ne jamais faire apparaître d'unité dans une poche isolée.
      ═════════════════════════════════════════════════════ */
-  ensureComponents() {
-    if (this.comp && this.compVersion === this.version) return;
+  /** Remplissage par diffusion générique : `passable(i)` définit le réseau. */
+  _components(passable) {
     const n = this.n, W = this.w, H = this.h;
     const comp = new Int32Array(n).fill(-1);
     const sizes = [];
     const stack = new Int32Array(n);
     let nc = 0;
     for (let i = 0; i < n; i++) {
-      if (comp[i] !== -1 || (this.flags[i] & BLOCK_MOVE)) continue;
+      if (comp[i] !== -1 || !passable(i)) continue;
       let sp = 0, size = 0;
       comp[i] = nc; stack[sp++] = i;
       while (sp) {
@@ -95,9 +96,9 @@ export class Grid {
           const nx = cx + NDX[d], ny = cy + NDY[d];
           if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
           const ni = ny * W + nx;
-          if (comp[ni] !== -1 || (this.flags[ni] & BLOCK_MOVE)) continue;
-          /* pas de passage en diagonale entre deux angles de murs */
-          if (d >= 4 && ((this.flags[cy * W + nx] & BLOCK_MOVE) || (this.flags[ny * W + cx] & BLOCK_MOVE))) continue;
+          if (comp[ni] !== -1 || !passable(ni)) continue;
+          /* pas de passage en diagonale entre deux angles bloqués */
+          if (d >= 4 && (!passable(cy * W + nx) || !passable(ny * W + cx))) continue;
           comp[ni] = nc; stack[sp++] = ni;
         }
       }
@@ -105,10 +106,104 @@ export class Grid {
     }
     let main = 0;
     for (let i = 1; i < sizes.length; i++) if (sizes[i] > sizes[main]) main = i;
-    this.comp = comp;
-    this.compSizes = sizes;
-    this.mainComp = sizes.length ? main : -1;
+    return { comp, sizes, main: sizes.length ? main : -1 };
+  }
+
+  ensureComponents() {
+    if (this.comp && this.compVersion === this.version) return;
+    const r = this._components(i => (this.flags[i] & BLOCK_MOVE) === 0);
+    this.comp = r.comp;
+    this.compSizes = r.sizes;
+    this.mainComp = r.main;
     this.compVersion = this.version;
+  }
+
+  /** Composantes du réseau routier : un véhicule ne quitte jamais la voirie. */
+  ensureRoadComponents() {
+    if (this.rComp && this.rCompVersion === this.version) return;
+    const r = this._components(i => {
+      const f = this.flags[i];
+      return (f & T.ROAD) !== 0 && (f & BLOCK_DRIVE) === 0;
+    });
+    this.rComp = r.comp;
+    this.rCompSizes = r.sizes;
+    this.mainRoad = r.main;
+    this.rCompVersion = this.version;
+  }
+
+  /* ── Circulation ─────────────────────────────────────── */
+  driveable(x, y) {
+    const cx = (x / this.cell) | 0, cy = (y / this.cell) | 0;
+    if (!this.inBounds(cx, cy)) return false;
+    const f = this.flags[cy * this.w + cx];
+    return (f & T.ROAD) !== 0 && (f & BLOCK_DRIVE) === 0;
+  }
+  roadCompAt(x, y) {
+    this.ensureRoadComponents();
+    const cx = (x / this.cell) | 0, cy = (y / this.cell) | 0;
+    if (!this.inBounds(cx, cy)) return -1;
+    return this.rComp[cy * this.w + cx];
+  }
+  onMainRoad(x, y) { return this.roadCompAt(x, y) === this.mainRoad; }
+
+  /** Cellule de voirie principale la plus proche (garage, point de dépose…). */
+  nearestRoad(x, y, maxRing = 60) {
+    this.ensureRoadComponents();
+    const main = this.mainRoad;
+    let cx = clamp((x / this.cell) | 0, 0, this.w - 1);
+    let cy = clamp((y / this.cell) | 0, 0, this.h - 1);
+    if (this.rComp[cy * this.w + cx] === main) return { x, y };
+    for (let r = 1; r <= maxRing; r++) {
+      for (let i = -r; i <= r; i++) {
+        const cand = [[cx + i, cy - r], [cx + i, cy + r], [cx - r, cy + i], [cx + r, cy + i]];
+        for (const [ax, ay] of cand) {
+          if (!this.inBounds(ax, ay)) continue;
+          if (this.rComp[ay * this.w + ax] === main)
+            return { x: (ax + 0.5) * this.cell, y: (ay + 0.5) * this.cell };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Pose un barrage en travers de la route autour de (x,y). */
+  addBlockade(x, y, halfWidth) {
+    const c = this.cell, r2 = halfWidth * halfWidth;
+    const cx0 = clamp(Math.floor((x - halfWidth) / c), 0, this.w - 1);
+    const cx1 = clamp(Math.ceil((x + halfWidth) / c), 0, this.w - 1);
+    const cy0 = clamp(Math.floor((y - halfWidth) / c), 0, this.h - 1);
+    const cy1 = clamp(Math.ceil((y + halfWidth) / c), 0, this.h - 1);
+    let n = 0;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const py = (cy + 0.5) * c, row = cy * this.w;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const px = (cx + 0.5) * c;
+        if ((px - x) ** 2 + (py - y) ** 2 > r2) continue;
+        if (!(this.flags[row + cx] & T.ROAD)) continue;      // uniquement sur la voirie
+        if (this.flags[row + cx] & BLOCK_MOVE) continue;
+        this.flags[row + cx] |= T.BLOCKADE; n++;
+      }
+    }
+    if (n) this.version++;
+    return n;
+  }
+  removeBlockade(x, y, halfWidth) {
+    const c = this.cell, r2 = halfWidth * halfWidth;
+    const cx0 = clamp(Math.floor((x - halfWidth) / c), 0, this.w - 1);
+    const cx1 = clamp(Math.ceil((x + halfWidth) / c), 0, this.w - 1);
+    const cy0 = clamp(Math.floor((y - halfWidth) / c), 0, this.h - 1);
+    const cy1 = clamp(Math.ceil((y + halfWidth) / c), 0, this.h - 1);
+    let n = 0;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const py = (cy + 0.5) * c, row = cy * this.w;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const px = (cx + 0.5) * c;
+        if ((px - x) ** 2 + (py - y) ** 2 > r2) continue;
+        if (this.flags[row + cx] & T.BLOCKADE) { this.flags[row + cx] &= ~T.BLOCKADE; n++; }
+      }
+    }
+    if (n) this.version++;
+    return n;
   }
 
   compAt(x, y) {

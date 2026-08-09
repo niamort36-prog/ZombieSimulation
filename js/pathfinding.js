@@ -6,7 +6,7 @@
      (hélico, largages) : un seul calcul sert à N agents
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, T, BLOCK_MOVE } from './config.js';
+import { CFG, T, BLOCK_MOVE, BLOCK_DRIVE, BLOCKADE } from './config.js';
 
 const SQ2 = Math.SQRT2;
 /* Coût minimal d'une cellule (les routes sont plus rapides). L'heuristique
@@ -66,8 +66,10 @@ class Heap {
 
 /* ═══ A* ══════════════════════════════════════════════ */
 export class PathFinder {
-  constructor(grid) {
+  /** @param {'foot'|'road'} mode — un véhicule ne quitte jamais la voirie. */
+  constructor(grid, mode = 'foot') {
     this.g = grid;
+    this.mode = mode;
     const n = grid.n;
     this.gScore = new Float32Array(n);
     this.came   = new Int32Array(n);
@@ -81,10 +83,30 @@ export class PathFinder {
   /** Coût de traversée d'une cellule (Infinity si bloquée). */
   cost(i) {
     const f = this.g.flags[i];
+    if (this.mode === 'road') {
+      /* Hors voirie, ou barrage : impraticable pour un véhicule. */
+      if ((f & T.ROAD) === 0 || (f & BLOCK_DRIVE)) return Infinity;
+      return MIN_COST;
+    }
     if (f & BLOCK_MOVE) return Infinity;
+    if (f & T.BLOCKADE) return BLOCKADE.climbCost;
     if (f & T.RUBBLE) return 2.0;
     if (f & T.ROAD) return MIN_COST;
     return 1;
+  }
+
+  /** Cellule praticable pour ce mode de déplacement. */
+  ok(cx, cy) {
+    const g = this.g;
+    if (!g.inBounds(cx, cy)) return false;
+    return isFinite(this.cost(cy * g.w + cx));
+  }
+
+  /** Composante connexe pertinente pour ce mode. */
+  compOf(i) {
+    const g = this.g;
+    if (this.mode === 'road') { g.ensureRoadComponents(); return g.rComp[i]; }
+    g.ensureComponents(); return g.comp[i];
   }
 
   /**
@@ -97,10 +119,10 @@ export class PathFinder {
     let t = clampCell(g, (tx / c) | 0, (ty / c) | 0);
     if (!s || !t) return null;
 
-    // Départ bloqué (poussé dans un mur) → repli sur la case libre voisine
-    if (!g.cellWalkable(s.x, s.y)) { const f = nearestFreeCell(g, s.x, s.y, 6); if (!f) return null; s = f; }
-    // Arrivée bloquée → viser la case libre la plus proche
-    if (!g.cellWalkable(t.x, t.y)) { const f = nearestFreeCell(g, t.x, t.y, 12); if (!f) return null; t = f; }
+    // Départ impraticable (poussé dans un mur, véhicule hors voirie) → repli
+    if (!this.ok(s.x, s.y)) { const f = this.nearestOk(s.x, s.y, 10); if (!f) return null; s = f; }
+    // Arrivée impraticable → viser la cellule praticable la plus proche
+    if (!this.ok(t.x, t.y)) { const f = this.nearestOk(t.x, t.y, 30); if (!f) return null; t = f; }
 
     const si = s.y * W + s.x, ti = t.y * W + t.x;
     if (si === ti) return [{ x: tx, y: ty }];
@@ -108,8 +130,7 @@ export class PathFinder {
     /* Rejet immédiat si départ et arrivée sont dans deux zones non reliées :
        inutile de dérouler un A* complet pour découvrir qu'aucun chemin
        n'existe. */
-    g.ensureComponents();
-    if (g.comp[si] !== g.comp[ti]) { this.stats.unreachable++; return null; }
+    if (this.compOf(si) !== this.compOf(ti)) { this.stats.unreachable++; return null; }
 
     // Raccourci : ligne droite dégagée
     if (this.clearLine(sx, sy, (t.x + .5) * c, (t.y + .5) * c))
@@ -141,7 +162,7 @@ export class PathFinder {
         const cc = this.cost(ni);
         if (cc === Infinity) continue;
         if (d >= 4) {   // pas de passage en diagonale entre deux angles
-          if ((g.flags[cy * W + nx] & BLOCK_MOVE) || (g.flags[ny * W + cx] & BLOCK_MOVE)) continue;
+          if (!isFinite(this.cost(cy * W + nx)) || !isFinite(this.cost(ny * W + cx))) continue;
         }
         if (closed[ni] === mark) continue;
         const ng = gc + cc * DC[d];
@@ -189,6 +210,7 @@ export class PathFinder {
   /** Ligne dégagée pour le déplacement (échantillonnage 1 cellule). */
   clearLine(x0, y0, x1, y1) {
     const g = this.g, c = g.cell;
+    const road = this.mode === 'road';
     const dx = x1 - x0, dy = y1 - y0;
     const len = Math.hypot(dx, dy);
     const steps = Math.ceil(len / (c * 0.7));
@@ -196,10 +218,22 @@ export class PathFinder {
     const ux = dx / steps, uy = dy / steps;
     let x = x0, y = y0;
     for (let i = 0; i <= steps; i++) {
-      if (!g.walkable(x, y)) return false;
+      if (road ? !g.driveable(x, y) : !g.walkable(x, y)) return false;
       x += ux; y += uy;
     }
     return true;
+  }
+
+  /** Cellule praticable la plus proche, selon le mode. */
+  nearestOk(cx, cy, maxRing) {
+    if (this.ok(cx, cy)) return { x: cx, y: cy };
+    for (let r = 1; r <= maxRing; r++) {
+      for (let i = -r; i <= r; i++) {
+        const cand = [[cx + i, cy - r], [cx + i, cy + r], [cx - r, cy + i], [cx + r, cy + i]];
+        for (const [ax, ay] of cand) if (this.ok(ax, ay)) return { x: ax, y: ay };
+      }
+    }
+    return null;
   }
 }
 

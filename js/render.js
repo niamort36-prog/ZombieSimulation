@@ -95,12 +95,16 @@ export class Renderer {
     this.drawZoneMask();
     if (this.opts.terrain) this.drawTerrain();
     if (this.opts.blood) this.drawBlood(vp);
+    this.drawBase();
     this.drawCorpses(vp);
+    this.drawBlockades();
     this.drawCrates(vp);
     this.drawStrikes();
     if (this.opts.paths) this.drawPaths(vp);
     this.drawIndoor(vp);
+    this.drawVehicles(vp);
     this.drawEntities(vp, vis);
+    if (this.opts.squads) this.drawSquads();
     this.drawHelis();
     this.drawEffects();
   }
@@ -233,6 +237,14 @@ export class Renderer {
          l'imagerie satellite */
       ctx.fillStyle = 'rgba(255,224,140,0.9)';
       ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 6.283); ctx.fill();
+      /* niveau de barricade : arc bleu autour du halo */
+      if (b.fortify > 0.05) {
+        ctx.strokeStyle = 'rgba(120,190,255,0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, r + 2.5, -1.57, -1.57 + 6.283 * Math.min(1, b.fortify / 3));
+        ctx.stroke();
+      }
       if (k > 1.1 && n > 1) {
         ctx.fillStyle = 'rgba(255,236,190,0.85)';
         ctx.font = '9px system-ui';
@@ -385,6 +397,154 @@ export class Renderer {
       for (let i = e.pathI; i < e.path.length; i++)
         ctx.lineTo(this.px(e.path[i].x), this.py(e.path[i].y));
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ── Base, barrages, véhicules, escouades ──────────── */
+
+  drawBase() {
+    const b = this.sim.base;
+    if (!b) return;
+    const ctx = this.ctx, x = this.px(b.x), y = this.py(b.y), r = b.r * this.k;
+    ctx.save();
+    const g = ctx.createRadialGradient(x, y, r * 0.2, x, y, Math.max(1, r));
+    g.addColorStop(0, 'rgba(126,231,135,0.16)');
+    g.addColorStop(1, 'rgba(126,231,135,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, Math.max(1, r), 0, 6.283); ctx.fill();
+    ctx.strokeStyle = 'rgba(126,231,135,0.75)'; ctx.lineWidth = 1.6;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath(); ctx.arc(x, y, Math.max(1, r), 0, 6.283); ctx.stroke();
+    ctx.setLineDash([]);
+    /* mât et fanion */
+    ctx.strokeStyle = '#7ee787'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - 18); ctx.stroke();
+    ctx.fillStyle = '#7ee787';
+    ctx.beginPath(); ctx.moveTo(x, y - 18); ctx.lineTo(x + 13, y - 14); ctx.lineTo(x, y - 10);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(200,247,221,0.95)';
+    ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('BASE', x, y + 14);
+    ctx.restore();
+  }
+
+  drawBlockades() {
+    const ctx = this.ctx, k = this.k;
+    for (const bl of this.sim.blockades) {
+      const x = this.px(bl.x), y = this.py(bl.y);
+      const r = Math.max(6, 11 * k);
+      ctx.save();
+      if (!bl.built) {
+        /* progression du montage */
+        const p = bl.progress / 20;
+        ctx.strokeStyle = 'rgba(255,180,84,0.85)'; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(x, y, r, -1.57, -1.57 + 6.283 * Math.min(1, p)); ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,180,84,0.25)';
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.stroke();
+      } else {
+        ctx.fillStyle = 'rgba(255,180,84,0.18)';
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,180,84,0.9)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.stroke();
+        /* chevrons de chantier */
+        ctx.lineWidth = 3; ctx.strokeStyle = '#ffb454';
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(x - r * 0.7, y + i * r * 0.45);
+          ctx.lineTo(x + r * 0.7, y + i * r * 0.45);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  drawVehicles(vp) {
+    const ctx = this.ctx, k = this.k;
+    for (const v of this.sim.vehicles) {
+      if (v.x < vp.x0 || v.x > vp.x1 || v.y < vp.y0 || v.y > vp.y1) continue;
+      const x = this.px(v.x), y = this.py(v.y);
+      /* Un véhicule reste lisible même dézoomé : plancher en pixels. */
+      const L = Math.max(7, v.spec.half * 2 * k), W = Math.max(4, v.spec.wide * 2 * k);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(v.dir);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(-L / 2 + 1, -W / 2 + 1.5, L, W);
+
+      const wreck = !v.alive;
+      ctx.fillStyle = wreck ? '#2a2622' : v.spec.color;
+      ctx.strokeStyle = wreck ? '#1b1815' : 'rgba(0,0,0,0.65)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(-L / 2, -W / 2, L, W, Math.min(3, W * 0.35));
+      else ctx.rect(-L / 2, -W / 2, L, W);
+      ctx.fill(); ctx.stroke();
+
+      if (!wreck && L > 12) {
+        /* pare-brise, pour lire le sens de marche */
+        ctx.fillStyle = 'rgba(20,30,45,0.75)';
+        ctx.fillRect(L * 0.12, -W * 0.38, L * 0.22, W * 0.76);
+      }
+      if (wreck) {
+        ctx.strokeStyle = '#6b625a'; ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(-L / 2, -W / 2); ctx.lineTo(L / 2, W / 2);
+        ctx.moveTo(-L / 2, W / 2); ctx.lineTo(L / 2, -W / 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      /* occupants / état */
+      if (k > 0.6 && v.alive) {
+        const n = v.occupants.length;
+        if (n || v.state === 'loading') {
+          ctx.fillStyle = v.state === 'loading' ? '#ffb454' : '#4ee0c0';
+          ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+          ctx.fillText(`${n}/${v.capacity}`, x, y - Math.max(9, W));
+        }
+        if (v.type === 'supply' && v.ammo > 0) {
+          ctx.fillStyle = '#d9c47a'; ctx.font = 'bold 9px system-ui';
+          ctx.fillText('⁂', x, y + Math.max(12, W * 1.6));
+        }
+      }
+    }
+  }
+
+  /** Lien visuel chef ↔ équipiers ↔ civils escortés. */
+  drawSquads() {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (const sq of this.sim.squads) {
+      const L = sq.leader;
+      if (!L || L.vehicle) continue;
+      const lx = this.px(L.x), ly = this.py(L.y);
+      ctx.strokeStyle = sq.kind === KIND.POL ? 'rgba(78,161,255,0.35)' : 'rgba(126,231,135,0.35)';
+      ctx.beginPath();
+      for (const m of sq.members) {
+        if (m === L || m.vehicle) continue;
+        ctx.moveTo(lx, ly); ctx.lineTo(this.px(m.x), this.py(m.y));
+      }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,212,94,0.22)';
+      ctx.beginPath();
+      for (const c of sq.escorted) {
+        if (!c.alive || c.vehicle) continue;
+        ctx.moveTo(lx, ly); ctx.lineTo(this.px(c.x), this.py(c.y));
+      }
+      ctx.stroke();
+      /* objectif de l'escouade */
+      if (sq.anchor) {
+        ctx.strokeStyle = 'rgba(126,231,135,0.5)';
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        ctx.moveTo(lx, ly); ctx.lineTo(this.px(sq.anchor.x), this.py(sq.anchor.y));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
     ctx.restore();
   }
