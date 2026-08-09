@@ -15,6 +15,7 @@ export function makeEntity(kind, x, y, opts = {}) {
     x, y,
     vx: 0, vy: 0,
     dir: rand(-Math.PI, Math.PI),
+    variant: (Math.random() * 8) | 0,   // teinte de vêtement (voir sprites.js)
     hp: u.hp, maxHp: u.hp,
     alive: true,
     state: ST.IDLE,

@@ -205,6 +205,7 @@ js/
   pathfinding.js    A* (tas binaire, tampons réutilisés) + flow-fields Dijkstra
   spatial.js        hachage spatial pour la perception et la séparation
   entities.js       fabrique d'entités et fiches d'unités
+  sprites.js        banque de sprites pixel art et atlas
   squads.js         commandement : formation, missions, escorte
   vehicles.js       conduite routière, embarquement, écrasement
   sim.js            boucle de simulation : IA, combat, infection, opérations
@@ -231,13 +232,44 @@ Centre historique de Colmar, zone 536 × 401 m (445 bâtiments, 43 % de bâti) :
 | Chargement Overpass | 2 à 7 s |
 | Mise en place (rasterisation + composantes + peuplement) | 21 ms |
 | ~1 600 entités, 8 escouades, 44 véhicules, un pas de simulation | 1,5 ms |
-| Rendu d'une image (zone entière à l'écran) | 4,5 ms |
+| Rendu d'une image (zone entière à l'écran) | 3,2 ms |
 | Échecs de pathfinding | 0 % |
 
 Une ville synthétique de 1,2 × 1,2 km avec 7 500 entités simultanées tourne à
 8 ms par pas, soit encore du temps réel confortable en vitesse ×1.
 
 ---
+
+### Sprites
+
+Les personnages, véhicules, caisses et l'hélicoptère sont du **pixel art vu de
+dessus**, dessiné dans [`js/sprites.js`](js/sprites.js) sous forme de grilles de
+caractères orientées vers l'est :
+
+```js
+const HUMAN = [
+  '..ooo..',      // o = vêtement   O = ombre du vêtement
+  '.OoooO.',      // s = peau       S = peau ombrée
+  '.ooooos',      // h = cheveux
+  '.oshso.',
+  ...
+];
+```
+
+Chaque grille est rasterisée à raison d'un pixel par caractère, puis tirée au
+zoom voulu **sans lissage** — arêtes franches garanties. Pour en ajouter un, il
+suffit d'écrire la grille et sa palette : aucun fichier image à produire.
+
+Trois détails qui comptent :
+
+- **Ancrage** — le point de rotation est le centre du torse, pas le centre de
+  l'image. Sans ça, le fusil qui dépasse devant décalerait le soldat en arrière
+  de sa position réelle.
+- **Atlas** — tous les sprites vivent dans une seule image de 429 × 21 px.
+  Dessiner depuis 16 canvas séparés faisait tripler le temps de rendu, le
+  contexte 2D rebasculant de texture à chaque changement.
+- **Variantes** — huit teintes de vêtements et six de carrosseries, tirées au
+  hasard à la création. La foule n'est pas uniforme sans coûter un calcul.
 
 ### Taille des sprites
 

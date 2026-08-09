@@ -6,6 +6,7 @@
    ═══════════════════════════════════════════════════════ */
 
 import { KIND, ST, T, UNIT, WEAPON, BLOCK_MOVE } from './config.js';
+import { buildSprites, spriteFor, spriteForVehicle } from './sprites.js';
 
 /* Un humain mesure moins d'un mètre de large : à l'échelle métrique exacte il
    occupe ~1 px au zoom 17, autrement dit il est invisible. Les sprites sont
@@ -25,6 +26,7 @@ export class Renderer {
     this.sim = sim;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.W = 0; this.H = 0;
+    this.S = buildSprites();
     this.opts = { terrain: false, los: false, paths: false, bars: true, blood: true, spriteScale: 1 };
     this.terrainCache = null;
     this.terrainVersion = -1;
@@ -206,14 +208,13 @@ export class Renderer {
     const ctx = this.ctx, k = this.k;
     if (k < TINY_SCALE * 0.6) return;
     const r = Math.max(MIN_CORPSE_PX, 0.45 * k * 2.2) * this.opts.spriteScale;
+    const px = (2.3 * r) / 9;
     ctx.save();
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.7;
     for (const c of this.sim.corpses) {
       if (c.x < vp.x0 || c.x > vp.x1 || c.y < vp.y0 || c.y > vp.y1) continue;
-      ctx.fillStyle = c.kind === KIND.ZOM ? '#4a2f66' : '#5a4a3a';
-      ctx.beginPath();
-      ctx.ellipse(this.px(c.x), this.py(c.y), r * 1.4, r * 0.8, c.dir, 0, 6.283);
-      ctx.fill();
+      const spr = c.kind === KIND.ZOM ? this.S.corpseZom : this.S.corpseHuman;
+      this.blit(spr, this.px(c.x), this.py(c.y), c.dir, px, false);
     }
     ctx.restore();
   }
@@ -255,6 +256,29 @@ export class Renderer {
     ctx.restore();
   }
 
+  /**
+   * Tire un sprite de l'atlas, centré sur son ancrage et orienté selon `dir`.
+   * Lissage désactivé : les pixels restent francs.
+   */
+  blit(f, x, y, dir, pxSize, shadow = true) {
+    const ctx = this.ctx;
+    const w = f.w * pxSize, h = f.h * pxSize;
+    const ox = -f.ax * pxSize, oy = -f.ay * pxSize;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(x, y);
+    ctx.rotate(dir);
+    /* En dessous d'un pixel de sprite par pixel écran, l'ombre n'est plus
+       perceptible : on économise la moitié des tirages. */
+    if (shadow && pxSize > 1.3) {
+      ctx.globalAlpha = 0.3;
+      ctx.drawImage(f.atlas, f.sx, f.shy, f.w, f.h, ox + pxSize, oy + pxSize, w, h);
+      ctx.globalAlpha = 1;
+    }
+    ctx.drawImage(f.atlas, f.sx, f.sy, f.w, f.h, ox, oy, w, h);
+    ctx.restore();
+  }
+
   /* ── Entités ────────────────────────────────────────── */
   drawEntities(vp, vis) {
     const ctx = this.ctx, k = this.k, s = this.sim;
@@ -279,10 +303,8 @@ export class Renderer {
       }
 
       if (e.state === ST.DOWNED) {
-        ctx.fillStyle = '#8b2f3a';
-        ctx.beginPath();
-        ctx.ellipse(x, y, r * 1.5, r * 0.75, e.dir, 0, 6.283);
-        ctx.fill();
+        if (tiny) { ctx.fillStyle = '#8b2f3a'; ctx.fillRect(x - r * 0.6, y - r * 0.6, r * 1.2, r * 1.2); }
+        else this.blit(this.S.downedCiv, x, y, e.dir, (2.3 * r) / 9);
         /* compte à rebours d'infection */
         if (!tiny) {
           ctx.strokeStyle = '#e05a7a'; ctx.lineWidth = 1.5;
@@ -318,57 +340,25 @@ export class Renderer {
     }
   }
 
-  /** Petit sprite vu du dessus : épaules + tête + orientation. */
+  /**
+   * Sprite pixel art vu de dessus. La grille source est orientée vers l'est ;
+   * on la fait pivoter et on la tire au zoom voulu, lissage désactivé pour
+   * conserver des pixels francs.
+   */
   sprite(ctx, e, x, y, r, tiny) {
-    const u = UNIT[e.kind];
-    let body = u.color;
-    if (e.kind === KIND.ZOM) body = e.zType === 'fast' ? '#c34bd8' : '#8f4bd8';
-    else if (e.kind === KIND.CIV && e.weapon) body = '#ffae4e';
-
     if (tiny) {
-      ctx.fillStyle = body;
+      /* Trop dézoomé pour lire un sprite : point coloré, la foule reste lisible. */
+      ctx.fillStyle = e.kind === KIND.ZOM ? (e.zType === 'fast' ? '#c34bd8' : '#8f4bd8')
+                    : e.kind === KIND.MIL ? '#7ee787'
+                    : e.kind === KIND.POL ? '#4ea1ff' : '#ffd45e';
       ctx.fillRect(x - r * 0.6, y - r * 0.6, r * 1.2, r * 1.2);
       return;
     }
 
-    const cos = Math.cos(e.dir), sin = Math.sin(e.dir);
-
-    /* ombre au sol */
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath(); ctx.ellipse(x + 0.6, y + 0.8, r * 1.15, r * 0.95, 0, 0, 6.283); ctx.fill();
-
-    /* épaules */
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.ellipse(x, y, r * 1.05, r * 0.78, e.dir, 0, 6.283);
-    ctx.fill();
-
-    /* tête */
-    ctx.fillStyle = e.kind === KIND.ZOM ? '#6f8f5a' : '#e3b98d';
-    ctx.beginPath();
-    ctx.arc(x + cos * r * 0.15, y + sin * r * 0.15, r * 0.52, 0, 6.283);
-    ctx.fill();
-
-    /* arme / bras tendus */
-    if (e.weapon && e.kind !== KIND.ZOM) {
-      ctx.strokeStyle = '#20242b';
-      ctx.lineWidth = Math.max(1, r * 0.3);
-      ctx.beginPath();
-      ctx.moveTo(x + cos * r * 0.4, y + sin * r * 0.4);
-      ctx.lineTo(x + cos * r * 1.9, y + sin * r * 1.9);
-      ctx.stroke();
-    } else if (e.kind === KIND.ZOM) {
-      /* bras tendus du zombie */
-      ctx.strokeStyle = '#5c7a49';
-      ctx.lineWidth = Math.max(0.8, r * 0.25);
-      const p = -sin, q = cos;
-      ctx.beginPath();
-      ctx.moveTo(x + p * r * 0.6, y + q * r * 0.6);
-      ctx.lineTo(x + cos * r * 1.5 + p * r * 0.5, y + sin * r * 1.5 + q * r * 0.5);
-      ctx.moveTo(x - p * r * 0.6, y - q * r * 0.6);
-      ctx.lineTo(x + cos * r * 1.5 - p * r * 0.5, y + sin * r * 1.5 - q * r * 0.5);
-      ctx.stroke();
-    }
+    const spr = spriteFor(this.S, e, KIND, ST);
+    /* r est le demi-gabarit voulu : les 9 rangées du sprite (la largeur
+       d'épaules) couvrent 2,3 r à l'écran. */
+    this.blit(spr, x, y, e.dir, (2.3 * r) / 9);
 
     /* liseré d'état */
     if (e.state === ST.FLEE) {
@@ -465,37 +455,12 @@ export class Renderer {
     for (const v of this.sim.vehicles) {
       if (v.x < vp.x0 || v.x > vp.x1 || v.y < vp.y0 || v.y > vp.y1) continue;
       const x = this.px(v.x), y = this.py(v.y);
-      /* Un véhicule reste lisible même dézoomé : plancher en pixels. */
-      const L = Math.max(7, v.spec.half * 2 * k), W = Math.max(4, v.spec.wide * 2 * k);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(v.dir);
-
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.fillRect(-L / 2 + 1, -W / 2 + 1.5, L, W);
-
-      const wreck = !v.alive;
-      ctx.fillStyle = wreck ? '#2a2622' : v.spec.color;
-      ctx.strokeStyle = wreck ? '#1b1815' : 'rgba(0,0,0,0.65)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(-L / 2, -W / 2, L, W, Math.min(3, W * 0.35));
-      else ctx.rect(-L / 2, -W / 2, L, W);
-      ctx.fill(); ctx.stroke();
-
-      if (!wreck && L > 12) {
-        /* pare-brise, pour lire le sens de marche */
-        ctx.fillStyle = 'rgba(20,30,45,0.75)';
-        ctx.fillRect(L * 0.12, -W * 0.38, L * 0.22, W * 0.76);
-      }
-      if (wreck) {
-        ctx.strokeStyle = '#6b625a'; ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.moveTo(-L / 2, -W / 2); ctx.lineTo(L / 2, W / 2);
-        ctx.moveTo(-L / 2, W / 2); ctx.lineTo(L / 2, -W / 2);
-        ctx.stroke();
-      }
-      ctx.restore();
+      const spr = spriteForVehicle(this.S, v);
+      /* Longueur réelle du véhicule à l'écran, avec un plancher de lisibilité. */
+      const L = Math.max(9, v.spec.half * 2 * k);
+      const px = L / spr.w;
+      const W = spr.h * px;
+      this.blit(spr, x, y, v.dir, px);
 
       /* occupants / état */
       if (k > 0.6 && v.alive) {
@@ -565,9 +530,7 @@ export class Renderer {
         ctx.moveTo(x + s * 1.2, y - s * 2.2); ctx.lineTo(x, y);
         ctx.stroke();
       }
-      ctx.fillStyle = '#7a6a3a'; ctx.strokeStyle = '#d9c47a'; ctx.lineWidth = 1.2;
-      ctx.fillRect(x - s / 2, y - s / 2, s, s);
-      ctx.strokeRect(x - s / 2, y - s / 2, s, s);
+      this.blit(this.S.crate, x, y, 0, s / this.S.crate.w, c.landed);
       if (c.landed && k > 0.6) {
         ctx.fillStyle = '#d9c47a'; ctx.font = 'bold 8px system-ui'; ctx.textAlign = 'center';
         ctx.fillText(c.uses, x, y + s * 1.6);
@@ -602,15 +565,12 @@ export class Renderer {
     for (const h of this.sim.helis) {
       const x = this.px(h.x), y = this.py(h.y);
       const s = Math.max(9, 7 * k);
+      /* fuselage en pixel art, orienté comme le reste des sprites */
+      this.blit(this.S.heli, x, y, h.dir, (s * 2.4) / this.S.heli.w);
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(h.dir);
-      /* fuselage */
-      ctx.fillStyle = '#2f3b30'; ctx.strokeStyle = '#7ee787'; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.ellipse(0, 0, s * 0.95, s * 0.42, 0, 0, 6.283); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(-s * 0.9, 0); ctx.lineTo(-s * 1.9, 0); ctx.lineWidth = s * 0.16;
-      ctx.strokeStyle = '#2f3b30'; ctx.stroke();
-      /* rotor */
+      /* rotor (vectoriel : il tourne) */
       const a = t * 26;
       ctx.strokeStyle = 'rgba(230,237,243,0.5)'; ctx.lineWidth = 1.6;
       for (let i = 0; i < 2; i++) {

@@ -14,6 +14,7 @@ export function makeVehicle(type, x, y, dir = 0) {
   return {
     vid: NEXT_VID++,
     type, spec,
+    variant: (Math.random() * 6) | 0,   // teinte de carrosserie
     x, y, dir,
     v: 0,                      // vitesse instantanée (m/s)
     path: null, pathI: 0, pathT: 0,
