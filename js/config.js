@@ -146,6 +146,28 @@ export const FORTIFY = {
 /* Carte de menace : grille grossière servant à juger si un secteur est sûr */
 export const THREAT = { cell: 32, decay: 0.82, refresh: 1.0, radius: 1 };
 
+/* ── Commandant ──────────────────────────────────────
+   Tant qu'il est en vie, il coordonne les forces : il établit la base,
+   déclenche les évacuations, ordonne barrages et frappes. S'il tombe, les
+   escouades retombent sur leur seule initiative. */
+export const COMMANDER = {
+  hp: 150,
+  think: 5,            // secondes entre deux décisions
+  logMax: 60,          // lignes conservées dans le journal
+  /* Dotations initiales et cadence de reconstitution (secondes) */
+  assets: {
+    heli:   { max: 2, reload: 200 },
+    strike: { max: 3, reload: 260 },
+    drop:   { max: 4, reload: 140 },
+  },
+  /* Seuils de doctrine */
+  strikeMinZombies: 14,      // densité minimale pour justifier une frappe
+  strikeSafeRadius: 70,      // aucun ami ni civil à moins de ça
+  evacMinCivilians: 12,      // groupe justifiant un hélicoptère
+  lowAmmoDrop: 90,           // cartouches/homme déclenchant un largage
+  baseMaxThreat: 1.5,        // menace tolérée à l'emplacement de la base
+};
+
 /* Compétence de tir par type d'unité (0..1) */
 export const SKILL = { [KIND.CIV]: 0.32, [KIND.POL]: 0.68, [KIND.MIL]: 0.88 };
 

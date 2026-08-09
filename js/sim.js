@@ -18,6 +18,7 @@ import {
   driveTo, seatsLeft, vehicleFree,
 } from './vehicles.js';
 import { formSquads, updateSquads, slotPosition, escortCentroid, orderBlockade } from './squads.js';
+import { initCommand, spawnCommander, updateCommand, commanderAlive, logCommand } from './commander.js';
 
 export class Sim {
   constructor() {
@@ -50,6 +51,7 @@ export class Sim {
       heliCap: 12, heliBoard: 3, heliWait: 45, strikeRadius: 40,
       autoWave: false, wavePeriod: 120,
       civCars: 40, milTrucks: 3, useVehicles: true, autoEscort: true,
+      commander: true,
     };
     this._waveT = 0;
   }
@@ -124,6 +126,7 @@ export class Sim {
     this.base = null;
     if (this.threat) this.threat.fill(0);
     this._fields = new Map();
+    initCommand(this);
   }
 
   /* ══ Carte de menace ══════════════════════════════════
@@ -271,6 +274,7 @@ export class Sim {
 
     this.spawnVehicles();
     formSquads(this);
+    if (p.commander && p.military > 0) spawnCommander(this);
     this.countStats();
   }
 
@@ -460,6 +464,7 @@ export class Sim {
 
     /* 2 — situation générale */
     this.updateThreat(dt);
+    updateCommand(this, dt);
     this.updateSquadOrders(dt);
 
     /* 3 — opérations */

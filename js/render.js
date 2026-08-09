@@ -316,6 +316,18 @@ export class Renderer {
 
       this.sprite(ctx, e, x, y, r, tiny);
 
+      /* Le commandant porte un galon : il faut pouvoir le suivre des yeux. */
+      if (e.commander && !tiny) {
+        ctx.strokeStyle = 'rgba(255,214,120,0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(x, y, r * 1.9, 0, 6.283); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,214,120,0.95)';
+        ctx.beginPath();
+        ctx.moveTo(x, y - r * 2.9); ctx.lineTo(x + r * 0.7, y - r * 2.1);
+        ctx.lineTo(x - r * 0.7, y - r * 2.1);
+        ctx.closePath(); ctx.fill();
+      }
+
       /* barres vie / munitions */
       if (this.opts.bars && !tiny) {
         if (e.hp < e.maxHp) {

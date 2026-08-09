@@ -71,6 +71,20 @@ const SOLDIER = [
   '..ooo......',
 ];
 
+/* Commandant : béret, jumelles à la ceinture, arme courte. Plus large
+   d'épaules que le soldat de base pour se distinguer d'un coup d'œil. */
+const OFFICER = [
+  '..oooo.....',
+  '.OooooO....',
+  '.oooooooww.',
+  '.ohhhhoosWW',
+  '.ohhhhoosww',
+  '.ohhhhoo...',
+  '.oooooooo..',
+  '.OooooO....',
+  '..oooo.....',
+];
+
 /* Zombie : bras tendus vers l'avant, démarche désaxée, taches de sang */
 const ZOMBIE = [
   '..ooo....',
@@ -260,6 +274,8 @@ export function buildSprites() {
   S.polUnarmed = raster(HUMAN, polPal, ...BODY_ANCHOR);
   S.mil = raster(SOLDIER, milPal, ...BODY_ANCHOR);
   S.milUnarmed = raster(HUMAN, milPal, ...BODY_ANCHOR);
+  /* Béret et tenue plus sombres : l'officier doit se repérer dans la masse. */
+  S.officer = raster(OFFICER, clothed('#3d4a2c', '#2b3520', { h: '#5c2f2f' }), ...BODY_ANCHOR);
 
   /* Zombies */
   S.zomSlow = raster(ZOMBIE, clothed('#4a4550', '#332f3a', { s: '#7d8f6a', S: '#63754f', h: '#2b3324' }), ...BODY_ANCHOR);
@@ -314,7 +330,9 @@ export function spriteFor(S, e, KIND, ST) {
   switch (e.kind) {
     case KIND.ZOM: return e.zType === 'fast' ? S.zomFast : S.zomSlow;
     case KIND.POL: return e.weapon ? S.pol : S.polUnarmed;
-    case KIND.MIL: return e.weapon ? S.mil : S.milUnarmed;
+    case KIND.MIL:
+      if (e.commander) return S.officer;
+      return e.weapon ? S.mil : S.milUnarmed;
     default:
       return pickVariant(e.weapon ? S.civArmed : S.civ, e.variant);
   }

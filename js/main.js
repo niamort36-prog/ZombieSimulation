@@ -8,6 +8,8 @@ import { Grid } from './grid.js';
 import { fetchOSM, buildTerrain, estimatePopulation } from './osm.js';
 import { Sim } from './sim.js';
 import { Renderer } from './render.js';
+import { commanderAlive } from './commander.js';
+import { PROVIDERS, requestOrders } from './ai-command.js';
 
 /* ── Raccourcis DOM ─────────────────────────────────── */
 const $ = s => document.querySelector(s);
@@ -199,6 +201,10 @@ function startSim() {
   sim.reset();
   patrolBoxes.clearLayers();
   if (baseMarker) { map.removeLayer(baseMarker); baseMarker = null; }
+  /* reset() reconstruit l'état de commandement : on resynchronise l'interface */
+  logSeen = -1;
+  const aiBtn = $('#btn-ai-toggle');
+  if (aiBtn) { aiBtn.textContent = '▶ Activer'; aiBtn.classList.remove('on'); }
   estimatePopulation(sim.buildings, sim.frame, sim.params.density);
   sim.populate();
   renderer.terrainVersion = -1;
@@ -367,6 +373,116 @@ for (const [sel, key] of checks) {
   el.addEventListener('change', () => renderer.opts[key] = el.checked);
 }
 
+/* ═══ Commandement ════════════════════════════════════ */
+$('#opt-commander').addEventListener('change', e => sim.params.commander = e.target.checked);
+
+/* Réglages du LLM. La clé vit dans le navigateur et nulle part ailleurs. */
+const aiCfg = {
+  provider: localStorage.getItem('zs.ai.provider') || 'gemini',
+  model: localStorage.getItem('zs.ai.model') || '',
+  key: localStorage.getItem('zs.ai.key') || '',
+  period: parseFloat(localStorage.getItem('zs.ai.period')) || 30,
+};
+
+function fillModels() {
+  const p = PROVIDERS[aiCfg.provider];
+  const sel = $('#ai-model');
+  sel.innerHTML = '';
+  for (const m of p.models) {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m;
+    sel.appendChild(o);
+  }
+  if (!p.models.includes(aiCfg.model)) aiCfg.model = p.models[0];
+  sel.value = aiCfg.model;
+  $('#ai-keyhint').textContent = p.keyHint;
+}
+$('#ai-provider').value = aiCfg.provider;
+$('#ai-key').value = aiCfg.key;
+$('#s-aiperiod').value = aiCfg.period;
+$('#v-aiperiod').textContent = aiCfg.period;
+fillModels();
+
+const saveAI = () => {
+  localStorage.setItem('zs.ai.provider', aiCfg.provider);
+  localStorage.setItem('zs.ai.model', aiCfg.model);
+  localStorage.setItem('zs.ai.key', aiCfg.key);
+  localStorage.setItem('zs.ai.period', aiCfg.period);
+};
+$('#ai-provider').addEventListener('change', e => { aiCfg.provider = e.target.value; fillModels(); saveAI(); });
+$('#ai-model').addEventListener('change', e => { aiCfg.model = e.target.value; saveAI(); });
+$('#ai-key').addEventListener('change', e => { aiCfg.key = e.target.value.trim(); saveAI(); });
+$('#s-aiperiod').addEventListener('input', e => {
+  aiCfg.period = parseFloat(e.target.value);
+  $('#v-aiperiod').textContent = aiCfg.period;
+  saveAI();
+});
+
+/* Le moteur ne connaît pas le réseau : il appelle ce crochet, on branche le LLM. */
+sim.requestAIOrders = () => requestOrders(sim, aiCfg);
+
+$('#btn-ai-toggle').addEventListener('click', () => {
+  if (!sim.ready) { toast('Charge d\'abord une zone.', 'warn'); return; }
+  const ai = sim.command.ai;
+  if (!ai.enabled && !aiCfg.key) { toast('Renseigne une clé d\'API d\'abord.', 'warn'); return; }
+  ai.enabled = !ai.enabled;
+  ai.nextT = 0;
+  const b = $('#btn-ai-toggle');
+  b.textContent = ai.enabled ? '⏸ Reprendre la doctrine locale' : '▶ Activer';
+  b.classList.toggle('on', ai.enabled);
+  toast(ai.enabled
+    ? `Commandement confié à ${PROVIDERS[aiCfg.provider].label}.`
+    : 'Retour à la doctrine locale.');
+});
+$('#btn-ai-once').addEventListener('click', () => {
+  if (!sim.ready) { toast('Charge d\'abord une zone.', 'warn'); return; }
+  if (!aiCfg.key) { toast('Renseigne une clé d\'API d\'abord.', 'warn'); return; }
+  if (!commanderAlive(sim)) { toast('Aucun commandant en vie pour transmettre.', 'warn'); return; }
+  requestOrders(sim, aiCfg);
+  toast('Situation transmise à l\'état-major…');
+});
+
+/** Journal et état du commandement. */
+let logSeen = -1;
+function commandStatus() {
+  const C = sim.command;
+  if (!C) return;
+  const el = $('#cmd-status');
+  if (commanderAlive(sim)) {
+    const a = C.assets;
+    el.innerHTML = `Commandant <b>en poste</b> · ${sim.squads.length} escouades<br>` +
+      `<span style="opacity:.75">🚁 ${a.heli.ready} · 💥 ${a.strike.ready} · 📦 ${a.drop.ready} disponibles</span>`;
+  } else {
+    el.innerHTML = C.officer
+      ? '<b style="color:#ff5b5b">Commandant hors de combat</b><br><span style="opacity:.75">Les escouades agissent à leur seule initiative.</span>'
+      : 'Aucun commandant';
+  }
+
+  if (C.log.length !== logSeen) {
+    logSeen = C.log.length;
+    const box = $('#cmd-log');
+    box.innerHTML = '';
+    /* Rendu inversé (le plus récent en haut) via flex column-reverse. */
+    for (const L of C.log.slice(-30)) {
+      const d = document.createElement('div');
+      d.className = L.kind;
+      const t = document.createElement('span');
+      t.className = 't';
+      const s = L.t | 0;
+      t.textContent = `${String((s / 60) | 0).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+      d.appendChild(t);
+      d.appendChild(document.createTextNode(L.text));
+      box.appendChild(d);
+    }
+  }
+
+  const st = $('#ai-status');
+  if (C.ai.busy) { st.className = 'status'; st.textContent = 'Transmission en cours…'; }
+  else if (C.ai.lastError) { st.className = 'status err'; st.textContent = '✗ ' + C.ai.lastError; }
+  else if (C.ai.calls) { st.className = 'status ok'; st.textContent = `✓ ${C.ai.calls} consultation(s)`; }
+  else st.textContent = '';
+}
+
 /* Véhicules et escorte */
 $('#opt-vehicles').addEventListener('change', e => sim.params.useVehicles = e.target.checked);
 $('#opt-escort').addEventListener('change', e => sim.params.autoEscort = e.target.checked);
@@ -531,6 +647,7 @@ function frame(now) {
       String((t / 60) | 0).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
     opsStatus();
     squadStatus();
+    commandStatus();
   }
   requestAnimationFrame(frame);
 }

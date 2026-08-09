@@ -188,6 +188,39 @@
     </div>
   </section>
 
+  <!-- ─── 4 bis. COMMANDEMENT ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">★</span>Commandement<i class="chev"></i></h2>
+    <div class="body">
+      <label class="chk"><input type="checkbox" id="opt-commander" checked> Officier commandant sur le terrain</label>
+      <div id="cmd-status" class="readout">Aucun commandant</div>
+      <div id="cmd-log" class="log"></div>
+
+      <details id="ai-block">
+        <summary>Confier le commandement à une IA</summary>
+        <p class="hint">Le commandant envoie sa situation à un modèle qui lui répond par des ordres. Ils passent par les mêmes garde-fous que la doctrine locale : une frappe sur des amis reste refusée.</p>
+        <label class="fld"><span>Fournisseur</span>
+          <select id="ai-provider" class="sel">
+            <option value="gemini">Google Gemini</option>
+            <option value="openai">OpenAI (ChatGPT)</option>
+            <option value="claude">Anthropic Claude</option>
+          </select></label>
+        <label class="fld"><span>Modèle</span>
+          <select id="ai-model" class="sel"></select></label>
+        <label class="fld"><span>Clé d'API <b id="ai-keyhint"></b></span>
+          <input type="password" id="ai-key" class="sel" placeholder="collée ici, stockée dans ce navigateur" autocomplete="off"></label>
+        <label class="fld"><span>Intervalle entre deux consultations <b id="v-aiperiod">30</b> s</span>
+          <input type="range" id="s-aiperiod" min="10" max="180" step="5" value="30"></label>
+        <div class="row">
+          <button id="btn-ai-toggle" class="btn primary">▶ Activer</button>
+          <button id="btn-ai-once" class="btn ghost">Demander un ordre</button>
+        </div>
+        <div id="ai-status" class="status"></div>
+        <p class="hint warn-note">⚠ La clé reste dans ce navigateur (localStorage) et part directement chez le fournisseur. Elle n'est jamais envoyée ailleurs ni écrite dans le dépôt. Évite-la sur un poste partagé.</p>
+      </details>
+    </div>
+  </section>
+
   <!-- ─── 5. AFFICHAGE ─── -->
   <section class="card" data-open="0">
     <h2><span class="num">5</span>Affichage &amp; debug<i class="chev"></i></h2>

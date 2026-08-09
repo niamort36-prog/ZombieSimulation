@@ -127,6 +127,56 @@ reste. Elle avance au pas des civils, jamais plus vite.
 | Ralliement base | bouton « Tous à la base » |
 | Ravitaillement | automatique sous 60 cartouches par homme |
 
+### Commandant
+
+Un **officier est présent sur le terrain** (galon doré, béret, à la tête d'une
+escouade). **Tant qu'il est en vie**, il coordonne les forces ; s'il tombe, les
+escouades retombent sur leur seule initiative et plus personne ne déclenche
+d'opération.
+
+Sa doctrine, réévaluée toutes les 5 s :
+
+1. **Établir la base** — secteur calme, desservi par la route, proche des civils.
+2. **Frappe** sur une concentration de zombies — refusée s'il y a le moindre ami
+   ou civil dans le rayon, ou un bâtiment encore habité.
+3. **Évacuation héliportée** d'un attroupement que la base ne peut pas absorber.
+4. **Largage** sur une escouade à sec et loin de toute source.
+5. **Barrage** sur l'axe routier par lequel les hostiles arrivent.
+6. **Rappel en défense** quand la base est sous pression.
+
+Ses moyens sont **limités et se reconstituent** : 2 hélicoptères, 3 frappes,
+4 largages, avec des délais de plusieurs minutes. Le **journal du commandement**
+(section ★ du panneau) affiche chaque ordre avec son horodatage et son motif.
+
+### Commandement par IA (optionnel)
+
+Le commandant peut déléguer ses décisions à **Gemini, ChatGPT ou Claude**. Il
+envoie un compte rendu de situation (≈ 1,9 ko de JSON : effectifs, base,
+escouades avec leurs munitions et missions, foyers hostiles, poches de civils,
+moyens disponibles) et reçoit une liste d'ordres :
+
+```json
+{ "analyse": "Horde au nord, civils exposés à l'est.",
+  "ordres": [ { "type": "evac", "x": 209, "y": 53, "raison": "184 civils isolés" } ] }
+```
+
+Les ordres passent par **exactement le même exécuteur** que la doctrine locale,
+avec ses garde-fous — le modèle propose, la simulation dispose :
+
+| Situation | Résultat |
+|---|---|
+| Frappe sur ses propres troupes | *« frappe refusée : 146 amis dans le rayon »* |
+| Moyen déjà épuisé | *« aucun hélicoptère disponible »* |
+| Type d'ordre inconnu, escouade inexistante, JSON malformé | écarté avec son motif |
+| Réseau coupé, délai dépassé, réponse non-JSON | journalisé, la simulation continue |
+
+Tout est visible dans le journal, y compris les refus. En cas de panne, le tour
+suivant repasse à la doctrine locale.
+
+**La clé d'API reste dans ton navigateur** (`localStorage`) et part directement
+chez le fournisseur — jamais ailleurs, jamais dans le dépôt. Sur un poste
+partagé, garde la doctrine locale, qui ne demande ni clé ni réseau.
+
 ### Munitions
 
 Un militaire porte **300 cartouches** (30 en chargeur + 270 en réserve), un
@@ -205,6 +255,8 @@ js/
   pathfinding.js    A* (tas binaire, tampons réutilisés) + flow-fields Dijkstra
   spatial.js        hachage spatial pour la perception et la séparation
   entities.js       fabrique d'entités et fiches d'unités
+  commander.js      officier, doctrine locale, exécution des ordres
+  ai-command.js     commandement délégué à un LLM (Gemini / OpenAI / Claude)
   sprites.js        banque de sprites pixel art et atlas
   squads.js         commandement : formation, missions, escorte
   vehicles.js       conduite routière, embarquement, écrasement
