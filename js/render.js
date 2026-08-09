@@ -24,18 +24,29 @@ export class Renderer {
     this.map = map;
     this.sim = sim;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.W = 0; this.H = 0;
     this.opts = { terrain: false, los: false, paths: false, bars: true, blood: true, spriteScale: 1 };
     this.terrainCache = null;
     this.terrainVersion = -1;
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    /* La taille du canvas doit suivre sa boîte CSS quoi qu'il arrive : mise en
+       page pas encore stabilisée au démarrage, feuille de style arrivée en
+       retard, panneau replié, rotation d'écran… Sans cet observateur, une
+       mesure fausse au premier rendu restait figée pour toute la session. */
+    if (window.ResizeObserver) {
+      this._ro = new ResizeObserver(() => this.resize());
+      this._ro.observe(this.cv);
+    }
   }
 
   resize() {
-    const r = this.cv.getBoundingClientRect();
-    this.cv.width = Math.round(r.width * this.dpr);
-    this.cv.height = Math.round(r.height * this.dpr);
-    this.W = r.width; this.H = r.height;
+    const w = this.cv.clientWidth, h = this.cv.clientHeight;
+    if (!w || !h) return;                      // élément pas encore mesurable
+    if (w === this.W && h === this.H) return;  // rien n'a bougé
+    this.cv.width = Math.round(w * this.dpr);
+    this.cv.height = Math.round(h * this.dpr);
+    this.W = w; this.H = h;
   }
 
   /**
@@ -73,6 +84,7 @@ export class Renderer {
 
   draw() {
     const ctx = this.ctx, s = this.sim;
+    if (!this.W || !this.H) { this.resize(); if (!this.W) return; }
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.W, this.H);
     if (!s.ready || !this.syncProjection()) return;

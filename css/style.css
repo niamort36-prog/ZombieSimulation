@@ -33,7 +33,15 @@ body{
 
 /* ── Carte + canvas FX ── */
 #map{position:absolute; inset:var(--top-h) 0 0 0; background:#0d1117}
-#fx{position:absolute; inset:var(--top-h) 0 0 0; pointer-events:none; z-index:420}
+/* ATTENTION : un <canvas> est un élément remplacé. Avec `inset` et une largeur
+   automatique, la spec CSS impose de conserver sa taille intrinsèque (300×150)
+   et d'ignorer les décalages droite/bas — le rendu se retrouvait alors écrasé
+   dans un petit rectangle en haut à gauche. Il faut des dimensions explicites. */
+#fx{
+  position:absolute; top:var(--top-h); left:0;
+  width:100%; height:calc(100% - var(--top-h));
+  pointer-events:none; z-index:420;
+}
 .leaflet-container{background:#0d1117; font-family:inherit}
 .leaflet-control-attribution{background:#0d1117bb!important;color:#66707d!important;font-size:10px}
 .leaflet-control-attribution a{color:#8892a0!important}
