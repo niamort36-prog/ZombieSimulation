@@ -353,6 +353,13 @@ $$('.tbtn.spd').forEach(b => b.addEventListener('click', () => {
 }));
 $('.tbtn.spd').classList.add('on');
 $('#btn-panel').addEventListener('click', () => $('#panel').classList.toggle('hidden'));
+
+/** Recadre la vue sur le terrain de jeu. */
+function fitZone() {
+  if (!zoneBounds) { toast('Aucune zone définie.', 'warn'); return; }
+  map.fitBounds(zoneBounds, { padding: [40, 40] });
+}
+$('#btn-fit').addEventListener('click', fitZone);
 $$('.tool').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
 $$('.card > h2').forEach(h => h.addEventListener('click', () => {
   const c = h.parentElement;
@@ -369,6 +376,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === '3') setTool('drop');
   else if (e.key === '4') setTool('patrol');
   else if (e.key === '5') setTool('spawnz');
+  else if (e.key === 'f' || e.key === 'F') fitZone();
   else if (e.key === 'Escape') { setTool('none'); if (drawing) setDrawMode(false); }
 });
 

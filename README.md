@@ -53,6 +53,7 @@ Puis dans le dépôt : **Settings → Pages → Source : Deploy from a branch �
 |---|---|
 | `Espace` | Lecture / pause |
 | `Tab` | Afficher/masquer le panneau |
+| `F` | Recadrer la vue sur la zone de jeu |
 | `1` … `5` | Évac · Frappe · Largage · Patrouille · Placer zombies |
 | `Échap` | Désélectionner l'outil |
 
@@ -175,7 +176,16 @@ repassent à l'échelle réelle qu'au zoom 19-20. Le curseur *Taille des sprites
 (section 5) ajuste ce plancher de ×0,5 à ×3.
 
 Les habitants restés à l'intérieur n'ont pas de sprite : ils apparaissent comme
-un **halo jaune sur leur bâtiment**, avec le nombre d'occupants au centre.
+un **halo jaune cerclé sur leur bâtiment**, avec le nombre d'occupants au
+centre. Un quartier peuplé se repère à ses grappes de halos ; un parc ou une
+zone industrielle en est dépourvu.
+
+### Se repérer
+
+Tout ce qui est **hors du terrain de jeu est assombri**, et le contour de la
+zone est tracé en bleu. Si la zone sort entièrement du champ (facile quand on
+zoome fort sur une zone de plusieurs kilomètres), une flèche indique sa
+direction : **`F`** ou le bouton **⊡** recadrent dessus.
 
 ## Réglages avancés
 

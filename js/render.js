@@ -38,28 +38,36 @@ export class Renderer {
     this.W = r.width; this.H = r.height;
   }
 
-  /** Met à jour origine + échelle depuis l'état courant de la carte. */
+  /**
+   * Met à jour origine + échelle depuis l'état courant de la carte.
+   * On cale la projection sur les deux coins opposés de la zone plutôt que sur
+   * une échelle déduite de 100 m : le repère monde est équirectangulaire alors
+   * que la carte est en Mercator, et l'écart atteignait 0,5 % — soit près de
+   * 30 px de décalage entre un personnage et son bâtiment sur une zone de 4 km.
+   * Ancrer les coins rend l'erreur nulle aux bords et négligeable au milieu.
+   */
   syncProjection() {
     const s = this.sim;
     if (!s.frame) return false;
     const f = s.frame;
-    const o = this.map.latLngToContainerPoint(L.latLng(f.lat0, f.lon0));
-    const [lat2, lon2] = f.toLatLng(100, 0);
-    const p2 = this.map.latLngToContainerPoint(L.latLng(lat2, lon2));
-    this.ox = o.x; this.oy = o.y;
-    this.k = (p2.x - o.x) / 100;              // pixels par mètre
-    return this.k > 0;
+    const nw = this.map.latLngToContainerPoint(L.latLng(f.b.north, f.b.west));
+    const se = this.map.latLngToContainerPoint(L.latLng(f.b.south, f.b.east));
+    this.ox = nw.x; this.oy = nw.y;
+    this.kx = (se.x - nw.x) / f.width;        // pixels par mètre, en x
+    this.ky = (se.y - nw.y) / f.height;       // …et en y
+    this.k = this.kx;                         // échelle de référence des tailles
+    return this.kx > 0 && this.ky > 0;
   }
 
-  px(x) { return this.ox + x * this.k; }
-  py(y) { return this.oy + y * this.k; }
+  px(x) { return this.ox + x * this.kx; }
+  py(y) { return this.oy + y * this.ky; }
 
   /** Rectangle monde visible (avec marge). */
   viewport() {
-    const m = 60 / this.k;
+    const mx = 60 / this.kx, my = 60 / this.ky;
     return {
-      x0: (-this.ox) / this.k - m, y0: (-this.oy) / this.k - m,
-      x1: (this.W - this.ox) / this.k + m, y1: (this.H - this.oy) / this.k + m,
+      x0: (-this.ox) / this.kx - mx, y0: (-this.oy) / this.ky - my,
+      x1: (this.W - this.ox) / this.kx + mx, y1: (this.H - this.oy) / this.ky + my,
     };
   }
 
@@ -72,6 +80,7 @@ export class Renderer {
     const k = this.k, vp = this.viewport();
     const vis = (x, y, pad = 4) => x > vp.x0 - pad && x < vp.x1 + pad && y > vp.y0 - pad && y < vp.y1 + pad;
 
+    this.drawZoneMask();
     if (this.opts.terrain) this.drawTerrain();
     if (this.opts.blood) this.drawBlood(vp);
     this.drawCorpses(vp);
@@ -82,6 +91,54 @@ export class Renderer {
     this.drawEntities(vp, vis);
     this.drawHelis();
     this.drawEffects();
+  }
+
+  /**
+   * Assombrit tout ce qui est hors du terrain de jeu, et signale la direction
+   * de la zone quand elle est entièrement hors du champ. Sans ce repère, un
+   * zoom un peu appuyé sur un parc ou un bord de zone donne l'impression que
+   * la simulation ne dessine rien.
+   */
+  drawZoneMask() {
+    const ctx = this.ctx, f = this.sim.frame;
+    const x0 = this.px(0), y0 = this.py(0);
+    const x1 = this.px(f.width), y1 = this.py(f.height);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, this.W, this.H);
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = 'rgba(4,8,14,0.5)';
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    /* Contour de la zone */
+    ctx.save();
+    ctx.strokeStyle = 'rgba(78,161,255,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([9, 6]);
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.restore();
+
+    /* Zone hors champ → flèche vers son centre */
+    const off = x1 < 0 || y1 < 0 || x0 > this.W || y0 > this.H;
+    if (!off) return;
+    const cx = this.W / 2, cy = this.H / 2;
+    const tx = (x0 + x1) / 2, ty = (y0 + y1) / 2;
+    const a = Math.atan2(ty - cy, tx - cx);
+    const rr = Math.min(this.W, this.H) * 0.3;
+    ctx.save();
+    ctx.translate(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    ctx.rotate(a);
+    ctx.fillStyle = 'rgba(78,161,255,0.95)';
+    ctx.beginPath();
+    ctx.moveTo(22, 0); ctx.lineTo(-14, -13); ctx.lineTo(-6, 0); ctx.lineTo(-14, 13);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(230,237,243,0.95)';
+    ctx.font = 'bold 13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Zone de jeu hors champ — touche F pour recadrer', cx, cy + rr + 34);
   }
 
   /* ── Grille de navigation (debug) ───────────────────── */
@@ -109,7 +166,7 @@ export class Renderer {
     const ctx = this.ctx;
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    const w = this.sim.frame.width * this.k, h = this.sim.frame.height * this.k;
+    const w = this.sim.frame.width * this.kx, h = this.sim.frame.height * this.ky;
     ctx.drawImage(this.terrainCache, this.px(0), this.py(0), w, h);
     ctx.restore();
   }
