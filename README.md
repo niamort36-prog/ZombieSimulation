@@ -1,0 +1,202 @@
+# 🧟 Zombie Simulator
+
+Simulation d'épidémie zombie **sur une vraie carte satellite**. On délimite une zone
+n'importe où dans le monde, l'application y importe le terrain réel depuis
+OpenStreetMap (bâtiments, cours d'eau, routes, murs), y installe une population
+cohérente avec le bâti, puis on regarde la situation dégénérer — en appelant des
+hélicoptères d'évacuation, des frappes aériennes et des largages de munitions.
+
+Application 100 % statique : **aucun build, aucune dépendance à installer**.
+Elle fonctionne telle quelle sur GitHub Pages.
+
+---
+
+## Démarrage
+
+### En local
+
+```bash
+python -m http.server 8123
+```
+
+Puis ouvrir <http://localhost:8123>. (Un serveur est nécessaire : le projet
+utilise des modules ES, qui ne se chargent pas depuis `file://`.)
+
+### Sur GitHub Pages
+
+```bash
+git init && git add . && git commit -m "Zombie Simulator"
+git branch -M main
+git remote add origin https://github.com/<utilisateur>/<depot>.git
+git push -u origin main
+```
+
+Puis dans le dépôt : **Settings → Pages → Source : Deploy from a branch →
+`main` / `(root)`**. Le site est en ligne une minute plus tard.
+
+---
+
+## Prise en main
+
+1. **Chercher un lieu** dans la barre du haut (ville, adresse).
+2. **Dessiner la zone** : bouton `✏️`, puis clic-glisser sur la carte.
+   Maximum 4 km de côté (au-delà, la grille de navigation devient trop lourde).
+3. **Charger le terrain (OSM)** : l'application interroge Overpass et rasterise
+   bâtiments, eau, routes et barrières. Compter 5 à 30 s selon la charge du
+   serveur Overpass.
+4. Régler la population, les forces armées, les zombies.
+5. **Lancer une vague** puis **▶** (ou `Espace`).
+
+### Raccourcis
+
+| Touche | Action |
+|---|---|
+| `Espace` | Lecture / pause |
+| `Tab` | Afficher/masquer le panneau |
+| `1` … `5` | Évac · Frappe · Largage · Patrouille · Placer zombies |
+| `Échap` | Désélectionner l'outil |
+
+---
+
+## Ce que fait la simulation
+
+### Terrain
+
+Les données OSM sont rasterisées dans une **grille de 2 m** où chaque cellule
+porte des drapeaux :
+
+| Drapeau | Effet |
+|---|---|
+| `BUILDING` | bloque le déplacement **et** la vue |
+| `WALL` | bloque le déplacement **et** la vue |
+| `FENCE` | bloque le déplacement, laisse passer le regard |
+| `WATER` | infranchissable à pied |
+| `ROAD` | déplacement plus rapide, lieu d'apparition privilégié |
+| `RUBBLE` | franchissable au ralenti (après une frappe) |
+
+Les **composantes connexes** de la carte sont précalculées : aucune unité
+n'apparaît dans une cour fermée, et un trajet vers une zone non reliée est
+rejeté immédiatement au lieu de faire tourner l'A\* dans le vide.
+
+### Population
+
+Le nombre de civils est déduit du bâti : `emprise au sol × étages ÷ 110 m²`,
+pondéré par l'usage du bâtiment (`apartments` ≫ `warehouse`, un `garage`
+n'héberge personne). Le curseur de densité multiplie le tout.
+
+Au départ, la plupart des habitants sont **à l'intérieur** (points jaunes sur les
+bâtiments) : ils y sont en sécurité. Ils ne sortent que si un hélicoptère se pose
+à portée, si les zombies **enfoncent la porte** (6 s de présence devant le
+bâtiment), ou en panique extrême — sinon toute la ville se retrouverait dans la
+rue à la première rafale.
+
+### Comportements
+
+- **Civils** — errent, fuient les zombies en criant (ce qui attire d'autres
+  zombies), rejoignent l'hélicoptère, rentrent chez eux quand le calme revient.
+  Une fraction d'entre eux est armée.
+- **Gendarmes / militaires** — engagent à vue dans la portée de leur arme,
+  décrochent si le contact devient trop proche, patrouillent la zone qu'on leur
+  assigne, vont se réapprovisionner aux caisses parachutées quand ils sont à sec.
+- **Zombies** — vue en cône (portée réglable) bloquée par les bâtiments, ouïe
+  (réglable) qui les oriente vers les coups de feu, les cris et les explosions.
+  Sans proie, ils repèrent les bâtiments habités et forcent l'entrée.
+  Lents ou rapides, en proportion réglable.
+
+### Infection
+
+Une morsure blesse ; à zéro point de vie la victime tombe **au sol, contaminée**
+(anneau de décompte autour du sprite) et se relève en zombie après le délai
+réglé. Une victime achevée à l'explosif ne se relève pas.
+
+### Opérations
+
+| Outil | Effet |
+|---|---|
+| 🚁 **Évac** | Un hélicoptère arrive du bord le plus proche, se pose, embarque **un civil à la fois** (durée réglable), repart une fois plein ou le délai d'attente écoulé. Les civils s'y rendent par un *flow-field* partagé — un seul calcul pour toute la population. |
+| 💥 **Frappe** | Compte à rebours puis explosion : dégâts dégressifs, bâtiments réduits en décombres (la carte devient franchissable à cet endroit), énorme signature sonore. |
+| 📦 **Largage** | Caisse parachutée : armes pour les civils désarmés, munitions pour les militaires. 8 utilisations. |
+| 🎯 **Patrouille** | Rectangle tracé à la souris : les 24 unités les plus proches y patrouillent. |
+| 🧟 **Placer Z** | Lâcher un groupe de zombies au clic, pour tester une situation. |
+
+---
+
+## Architecture
+
+```
+index.html          interface
+css/style.css
+js/
+  config.js         toutes les constantes de réglage (armes, unités, bruits…)
+  geo.js            projection locale lat/lon ↔ mètres
+  grid.js           grille de navigation, rasterisation, ligne de vue, composantes
+  osm.js            requête Overpass, parsing, estimation de population
+  pathfinding.js    A* (tas binaire, tampons réutilisés) + flow-fields Dijkstra
+  spatial.js        hachage spatial pour la perception et la séparation
+  entities.js       fabrique d'entités et fiches d'unités
+  sim.js            boucle de simulation : IA, combat, infection, opérations
+  render.js         rendu Canvas 2D par-dessus Leaflet
+  main.js           carte, interface, boucle principale
+test/               jeu de données OSM figé, pour tester sans réseau
+```
+
+**Boucle** : pas fixe à 20 Hz avec accumulateur, rendu découplé en
+`requestAnimationFrame`. Le multiplicateur de vitesse (×1 à ×8) exécute
+davantage de pas par image.
+
+**Budget de pathfinding** : les demandes de chemin passent par une file
+priorisée, au plus 28 A\* par tick. En attendant son chemin, une entité avance
+« au flair » dans la direction dégagée la plus proche de son objectif — personne
+ne reste jamais figé à attendre un calcul.
+
+### Ordres de grandeur mesurés
+
+Centre historique de Colmar, zone 536 × 401 m (445 bâtiments, 43 % de bâti) :
+
+| | |
+|---|---|
+| Chargement Overpass | 2 à 7 s |
+| Mise en place (rasterisation + composantes + peuplement) | 21 ms |
+| ~1 800 entités, un pas de simulation | 2 à 3 ms |
+| Rendu d'une image (zone entière à l'écran) | 4,5 ms |
+| Échecs de pathfinding | 0 % |
+
+Une ville synthétique de 1,2 × 1,2 km avec 7 500 entités simultanées tourne à
+8 ms par pas, soit encore du temps réel confortable en vitesse ×1.
+
+---
+
+## Réglages avancés
+
+Tout se règle dans `js/config.js` : vitesses, points de vie, portées, dégâts et
+cadence des armes, rayons sonores, densité de population, taille des cellules.
+
+La console expose `sim`, `gameMap` et `renderer` pour bidouiller en direct :
+
+```js
+sim.params.zFast = 6.5          // zombies rapides plus rapides
+sim.spawnWave(500)              // grosse vague
+sim.speed = 4                   // accélérer
+renderer.opts.terrain = true    // visualiser la grille de navigation
+```
+
+---
+
+## Limites connues
+
+- **Overpass** est un service public et gratuit : il est parfois lent ou
+  saturé. L'application bascule automatiquement entre trois miroirs.
+- Les bâtiments sont des **volumes pleins** : on ne circule pas à l'intérieur.
+  Les occupants sont abstraits (un compteur par bâtiment) jusqu'à ce qu'ils
+  sortent.
+- Les zombies ne franchissent pas l'eau, ce qui rend les îles et les rives
+  très sûres — c'est voulu, mais cela peut déséquilibrer certaines zones.
+- Au-delà de ~8 000 entités simultanées, prévoir de rester en vitesse ×1.
+
+---
+
+## Crédits
+
+Fond satellite : **Esri World Imagery** (Maxar, Earthstar Geographics).
+Terrain et géocodage : **OpenStreetMap** (contributeurs ODbL), via Overpass et
+Nominatim. Cartographie : **Leaflet**.

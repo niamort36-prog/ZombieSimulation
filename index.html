@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Zombie Simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#129503;</text></svg>">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="map"></div>
+<canvas id="fx"></canvas>
+
+<!-- ═══════════════ BARRE SUPÉRIEURE ═══════════════ -->
+<header id="topbar">
+  <div class="brand"><span class="logo">🧟</span><span>ZOMBIE&nbsp;SIMULATOR</span></div>
+
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Aller à une ville, une adresse…" autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+
+  <div id="hud">
+    <div class="stat" title="Civils en vie"><i class="dot civ"></i><span id="hud-civ">0</span></div>
+    <div class="stat" title="Gendarmes"><i class="dot pol"></i><span id="hud-pol">0</span></div>
+    <div class="stat" title="Militaires"><i class="dot mil"></i><span id="hud-mil">0</span></div>
+    <div class="stat" title="Zombies"><i class="dot zom"></i><span id="hud-zom">0</span></div>
+    <div class="stat" title="Évacués"><i class="dot evac"></i><span id="hud-evac">0</span></div>
+    <div class="stat" title="Morts"><i class="dot dead"></i><span id="hud-dead">0</span></div>
+    <div class="stat clock" title="Temps de simulation"><span id="hud-time">00:00</span></div>
+    <div class="stat fps" title="Performance"><span id="hud-fps">–</span></div>
+  </div>
+
+  <div id="transport">
+    <button id="btn-play"  class="tbtn" title="Lecture / Pause (Espace)">▶</button>
+    <button class="tbtn spd" data-speed="1">×1</button>
+    <button class="tbtn spd" data-speed="2">×2</button>
+    <button class="tbtn spd" data-speed="4">×4</button>
+    <button class="tbtn spd" data-speed="8">×8</button>
+    <button id="btn-panel" class="tbtn" title="Afficher/masquer le panneau (Tab)">☰</button>
+  </div>
+</header>
+
+<!-- ═══════════════ PANNEAU LATÉRAL ═══════════════ -->
+<aside id="panel">
+
+  <!-- ─── 1. ZONE DE JEU ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">1</span>Zone de jeu<i class="chev"></i></h2>
+    <div class="body">
+      <p class="hint">Dessine un rectangle sur la carte, puis charge le terrain réel (bâtiments, cours d'eau, routes) depuis OpenStreetMap.</p>
+      <div class="row">
+        <button id="btn-draw" class="btn primary">✏️ Dessiner la zone</button>
+        <button id="btn-clear-zone" class="btn ghost">Effacer</button>
+      </div>
+      <div id="zone-info" class="readout">Aucune zone définie</div>
+      <button id="btn-load" class="btn accent full" disabled>⬇️ Charger le terrain (OSM)</button>
+      <div id="load-status" class="status"></div>
+      <div class="row tight">
+        <label class="chk"><input type="checkbox" id="opt-show-terrain"> Voir la grille de navigation</label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 2. POPULATION ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">2</span>Population<i class="chev"></i></h2>
+    <div class="body">
+      <label class="fld">
+        <span>Densité de civils <b id="v-density">1.0</b>×</span>
+        <input type="range" id="s-density" min="0" max="3" step="0.1" value="1">
+      </label>
+      <div id="pop-estimate" class="readout">Charge le terrain pour estimer la population</div>
+      <label class="fld">
+        <span>Civils dehors au départ <b id="v-outdoor">25</b>%</span>
+        <input type="range" id="s-outdoor" min="0" max="100" step="5" value="25">
+      </label>
+      <div class="grid2">
+        <label class="fld"><span>Gendarmes <b id="v-police">12</b></span>
+          <input type="range" id="s-police" min="0" max="200" step="1" value="12"></label>
+        <label class="fld"><span>Militaires <b id="v-military">24</b></span>
+          <input type="range" id="s-military" min="0" max="400" step="1" value="24"></label>
+      </div>
+      <label class="fld">
+        <span>Civils armés au départ <b id="v-armedciv">3</b>%</span>
+        <input type="range" id="s-armedciv" min="0" max="100" step="1" value="3">
+      </label>
+    </div>
+  </section>
+
+  <!-- ─── 3. ZOMBIES ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">3</span>Zombies<i class="chev"></i></h2>
+    <div class="body">
+      <label class="fld"><span>Nombre par vague <b id="v-zcount">60</b></span>
+        <input type="range" id="s-zcount" min="1" max="1500" step="1" value="60"></label>
+      <label class="fld"><span>Proportion de rapides <b id="v-zfast">20</b>%</span>
+        <input type="range" id="s-zfast" min="0" max="100" step="5" value="20"></label>
+
+      <div class="fld"><span>Azimuts d'arrivée</span>
+        <div class="compass">
+          <button class="az" data-az="N">N</button>
+          <button class="az" data-az="O">O</button>
+          <button class="az mid">🧟</button>
+          <button class="az" data-az="E">E</button>
+          <button class="az" data-az="S">S</button>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <label class="fld"><span>Vitesse lent <b id="v-zslow">0.8</b> m/s</span>
+          <input type="range" id="s-zslow" min="0.2" max="2" step="0.1" value="0.8"></label>
+        <label class="fld"><span>Vitesse rapide <b id="v-zfastspd">4.0</b> m/s</span>
+          <input type="range" id="s-zfastspd" min="2" max="8" step="0.2" value="4"></label>
+      </div>
+
+      <label class="fld"><span>Délai de transformation <b id="v-turn">12</b> s</span>
+        <input type="range" id="s-turn" min="0" max="120" step="1" value="12"></label>
+      <label class="fld"><span>Portée de vue <b id="v-zsight">45</b> m</span>
+        <input type="range" id="s-zsight" min="5" max="150" step="5" value="45"></label>
+      <label class="fld"><span>Portée d'ouïe <b id="v-zhear">90</b> m</span>
+        <input type="range" id="s-zhear" min="10" max="400" step="10" value="90"></label>
+
+      <div class="row">
+        <button id="btn-wave" class="btn danger full">🧟 Lancer une vague</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="opt-autowave"> Vagues automatiques
+        <input type="number" id="n-waveperiod" min="10" max="3600" value="120" class="mini"> s</label>
+    </div>
+  </section>
+
+  <!-- ─── 4. OPÉRATIONS ─── -->
+  <section class="card" data-open="1">
+    <h2><span class="num">4</span>Opérations<i class="chev"></i></h2>
+    <div class="body">
+      <p class="hint">Sélectionne un outil, puis clique sur la carte.</p>
+      <div class="tools">
+        <button class="tool" data-tool="heli"    title="Zone d'atterrissage hélicoptère">🚁<span>Évac</span></button>
+        <button class="tool" data-tool="strike"  title="Frappe aérienne">💥<span>Frappe</span></button>
+        <button class="tool" data-tool="drop"    title="Parachutage d'armes et munitions">📦<span>Largage</span></button>
+        <button class="tool" data-tool="patrol"  title="Assigner une zone de patrouille (glisser)">🎯<span>Patrouille</span></button>
+        <button class="tool" data-tool="spawnz"  title="Placer des zombies">🧟<span>Placer Z</span></button>
+        <button class="tool" data-tool="none"    title="Curseur">🖱️<span>Aucun</span></button>
+      </div>
+
+      <div class="grid2">
+        <label class="fld"><span>Capacité héli <b id="v-hcap">12</b></span>
+          <input type="range" id="s-hcap" min="2" max="60" step="1" value="12"></label>
+        <label class="fld"><span>Embarquement <b id="v-hboard">3.0</b> s/civil</span>
+          <input type="range" id="s-hboard" min="0.5" max="15" step="0.5" value="3"></label>
+      </div>
+      <div class="grid2">
+        <label class="fld"><span>Attente au sol <b id="v-hwait">45</b> s</span>
+          <input type="range" id="s-hwait" min="10" max="300" step="5" value="45"></label>
+        <label class="fld"><span>Rayon de frappe <b id="v-srad">40</b> m</span>
+          <input type="range" id="s-srad" min="10" max="200" step="5" value="40"></label>
+      </div>
+      <div id="ops-status" class="readout">Aucune opération en cours</div>
+    </div>
+  </section>
+
+  <!-- ─── 5. AFFICHAGE ─── -->
+  <section class="card" data-open="0">
+    <h2><span class="num">5</span>Affichage &amp; debug<i class="chev"></i></h2>
+    <div class="body">
+      <label class="chk"><input type="checkbox" id="opt-los"> Cônes de vision</label>
+      <label class="chk"><input type="checkbox" id="opt-paths"> Trajectoires</label>
+      <label class="chk"><input type="checkbox" id="opt-names" checked> Barres de vie / munitions</label>
+      <label class="chk"><input type="checkbox" id="opt-blood" checked> Traces au sol</label>
+      <label class="fld"><span>Taille des sprites <b id="v-sprite">1.0</b>×</span>
+        <input type="range" id="s-sprite" min="0.5" max="3" step="0.1" value="1"></label>
+      <button id="btn-reset" class="btn ghost full">♻️ Réinitialiser la simulation</button>
+    </div>
+  </section>
+
+  <footer class="panel-foot">
+    <span>Fond&nbsp;: Esri World Imagery · Terrain&nbsp;: OpenStreetMap</span>
+  </footer>
+</aside>
+
+<!-- Bandeau d'aide contextuel -->
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
