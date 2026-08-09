@@ -166,6 +166,17 @@ Une ville synthétique de 1,2 × 1,2 km avec 7 500 entités simultanées tourne 
 
 ---
 
+### Taille des sprites
+
+Un humain fait moins d'un mètre de large : à l'échelle métrique exacte il
+occuperait **1 pixel** au zoom 17 — donc rien de visible. Les personnages sont
+dessinés comme des **pions de carte**, avec une taille plancher en pixels, et ne
+repassent à l'échelle réelle qu'au zoom 19-20. Le curseur *Taille des sprites*
+(section 5) ajuste ce plancher de ×0,5 à ×3.
+
+Les habitants restés à l'intérieur n'ont pas de sprite : ils apparaissent comme
+un **halo jaune sur leur bâtiment**, avec le nombre d'occupants au centre.
+
 ## Réglages avancés
 
 Tout se règle dans `js/config.js` : vitesses, points de vie, portées, dégâts et

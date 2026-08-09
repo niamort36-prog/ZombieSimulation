@@ -7,6 +7,16 @@
 
 import { KIND, ST, T, UNIT, WEAPON, BLOCK_MOVE } from './config.js';
 
+/* Un humain mesure moins d'un mètre de large : à l'échelle métrique exacte il
+   occupe ~1 px au zoom 17, autrement dit il est invisible. Les sprites sont
+   donc dessinés comme des pions de carte — jamais en dessous de cette taille —
+   et ne repassent à l'échelle réelle qu'une fois très zoomé. */
+const MIN_SPRITE_PX = 4.4;
+const MIN_CORPSE_PX = 2.8;
+/* En dessous de cette échelle (px/m) on ne dessine plus que des points colorés :
+   la zone entière tient dans quelques centaines de pixels. */
+const TINY_SCALE = 0.25;
+
 export class Renderer {
   constructor(canvas, map, sim) {
     this.cv = canvas;
@@ -113,7 +123,7 @@ export class Renderer {
       if (b.x < vp.x0 || b.x > vp.x1 || b.y < vp.y0 || b.y > vp.y1) continue;
       ctx.fillStyle = b.c || 'rgba(150,20,25,0.5)';
       ctx.beginPath();
-      ctx.arc(this.px(b.x), this.py(b.y), Math.max(1, b.r * k), 0, 6.283);
+      ctx.arc(this.px(b.x), this.py(b.y), Math.max(1.8, b.r * k * 2.2), 0, 6.283);
       ctx.fill();
     }
     ctx.restore();
@@ -121,8 +131,8 @@ export class Renderer {
 
   drawCorpses(vp) {
     const ctx = this.ctx, k = this.k;
-    if (k < 0.25) return;
-    const r = Math.max(1.4, 0.45 * k * this.opts.spriteScale);
+    if (k < TINY_SCALE * 0.6) return;
+    const r = Math.max(MIN_CORPSE_PX, 0.45 * k * 2.2) * this.opts.spriteScale;
     ctx.save();
     ctx.globalAlpha = 0.55;
     for (const c of this.sim.corpses) {
@@ -138,18 +148,22 @@ export class Renderer {
   /* ── Civils à l'abri ────────────────────────────────── */
   drawIndoor(vp) {
     const ctx = this.ctx, k = this.k;
-    if (k < 0.5) return;
+    if (k < TINY_SCALE) return;
     ctx.save();
     for (const b of this.sim.buildings) {
       const n = b.occupants.length;
       if (!n) continue;
       if (b.c.x < vp.x0 || b.c.x > vp.x1 || b.c.y < vp.y0 || b.c.y > vp.y1) continue;
       const x = this.px(b.c.x), y = this.py(b.c.y);
-      const r = Math.max(3, Math.min(10, 2 + Math.sqrt(n) * 2.4));
-      ctx.fillStyle = 'rgba(255,212,94,0.16)';
+      const r = Math.max(4, Math.min(12, 3 + Math.sqrt(n) * 2.4));
+      ctx.fillStyle = 'rgba(255,212,94,0.22)';
       ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,212,94,0.5)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,212,94,0.75)'; ctx.lineWidth = 1.3;
       ctx.stroke();
+      /* pastille centrale : sans elle, un bâtiment habité se confond avec
+         l'imagerie satellite */
+      ctx.fillStyle = 'rgba(255,224,140,0.9)';
+      ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 6.283); ctx.fill();
       if (k > 1.1 && n > 1) {
         ctx.fillStyle = 'rgba(255,236,190,0.85)';
         ctx.font = '9px system-ui';
@@ -164,13 +178,13 @@ export class Renderer {
   drawEntities(vp, vis) {
     const ctx = this.ctx, k = this.k, s = this.sim;
     const sc = this.opts.spriteScale;
-    const tiny = k < 0.55;
+    const tiny = k < TINY_SCALE;
 
     for (const e of s.entities) {
       if (e.indoor || e.state === ST.EVACUATED) continue;
       if (!vis(e.x, e.y)) continue;
       const x = this.px(e.x), y = this.py(e.y);
-      const r = Math.max(1.6, e.radius * k * 2.2 * sc);
+      const r = (tiny ? 2.6 : Math.max(MIN_SPRITE_PX, e.radius * k * 2.2)) * sc;
 
       /* cône de vision */
       if (this.opts.los && e.alive && !tiny) {
