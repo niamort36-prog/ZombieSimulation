@@ -2,10 +2,11 @@
    main.js — carte, interface, boucle principale
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, KIND, ST } from './config.js';
+import { CFG, KIND, ST, STAMINA } from './config.js';
 import { Frame, clamp } from './geo.js';
 import { Grid } from './grid.js';
 import { fetchOSM, buildTerrain, estimatePopulation } from './osm.js';
+import { loadRelief } from './elevation.js';
 import { Sim } from './sim.js';
 import { Renderer } from './render.js';
 import { commanderAlive } from './commander.js';
@@ -174,9 +175,21 @@ async function loadTerrain() {
     terrainLoaded = true;
     renderer.terrainVersion = -1;
 
+    /* Relief : facultatif et sans conséquence en cas d'échec — le terrain
+       reste simplement plat. */
+    let relief = null;
+    if ($('#opt-relief').checked) {
+      relief = await loadRelief(frame, grid, msg => { st.textContent = msg; });
+      renderer.terrainVersion = -1;
+    }
+
     popEstimate = estimatePopulation(buildings, frame, sim.params.density);
     st.className = 'status ok';
-    st.textContent = `✓ ${stats.buildings} bâtiments · ${stats.roads} tronçons · ${stats.water} plans d'eau · ${stats.barriers} barrières`;
+    const reliefTxt = !relief ? 'relief ignoré'
+      : relief.ok ? `relief ${relief.minAlt}–${relief.maxAlt} m, pente moyenne ${relief.meanSlope} %`
+      : `⚠ ${relief.reason}`;
+    st.textContent = `✓ ${stats.buildings} bâtiments · ${stats.roads} tronçons · ` +
+      `${stats.ground} surfaces de sol · ${stats.water} plans d'eau · ${reliefTxt}`;
     updatePopEstimate();
     map.fitBounds(zoneBounds, { padding: [40, 40] });
     startSim();
@@ -359,6 +372,16 @@ bindSlider('#s-srad', '#v-srad', 'strikeRadius');
 $('#s-sprite').addEventListener('input', e => {
   renderer.opts.spriteScale = parseFloat(e.target.value);
   $('#v-sprite').textContent = parseFloat(e.target.value).toFixed(1);
+});
+
+/* Endurance : le curseur agit sur la réserve, pas sur la consommation —
+   ×2 signifie « deux fois plus de souffle », ce qui se lit directement. */
+const BASE_DRAIN = STAMINA.drainRun, BASE_REC = STAMINA.recover;
+$('#s-stam').addEventListener('input', e => {
+  const k = parseFloat(e.target.value);
+  STAMINA.drainRun = BASE_DRAIN / k;
+  STAMINA.recover = BASE_REC * Math.sqrt(k);
+  $('#v-stam').textContent = k.toFixed(1);
 });
 
 /* Cases à cocher d'affichage */

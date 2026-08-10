@@ -6,7 +6,7 @@
 
 import {
   CFG, T, KIND, UNIT, WEAPON, ST, BLOCK_MOVE,
-  SQUAD, ORDER, BASE, BLOCKADE, FORTIFY, THREAT, VEHICLE,
+  SQUAD, ORDER, BASE, BLOCKADE, FORTIFY, THREAT, VEHICLE, STAMINA,
 } from './config.js';
 import { Grid } from './grid.js';
 import { PathFinder, FlowField } from './pathfinding.js';
@@ -542,6 +542,9 @@ export class Sim {
       const budget = r.priority >= 0.7 ? CFG.PATH_MAX_NODES
                    : r.priority >= 0.4 ? CFG.PATH_MAX_NODES * 0.5
                    : CFG.PATH_MAX_NODES * 0.25;
+      /* Un survivant contourne bois et champs pour épargner ses jambes ;
+         un zombie coupe au plus court. */
+      this.pf.profile = e.kind === KIND.ZOM ? 'zombie' : 'human';
       const path = this.pf.find(e.x, e.y, r.tx, r.ty, budget | 0);
       if (path) {
         e.path = path; e.pathI = 0; e.pathFails = 0;
@@ -629,6 +632,11 @@ export class Sim {
       const agg = 0.5 - e.indoorT;
       e.indoorT = 0.5;
       e.alert = Math.max(0, e.alert - agg * 0.05);
+      /* À l'abri, on reprend son souffle. */
+      if (e.stamina < 1) {
+        e.stamina = Math.min(1, e.stamina + STAMINA.recover * 1.5 * agg);
+        if (e.blown && e.stamina >= STAMINA.recovered) e.blown = false;
+      }
       e.fireT -= agg;
       if (e.reloadT > 0) { e.reloadT -= agg; if (e.reloadT <= 0) this.finishReload(e); }
       this.aiIndoor(e, agg);
@@ -1387,9 +1395,13 @@ export class Sim {
       }
     }
 
-    /* Objectif très lointain : on avance « au flair » vers lui sans payer un A*
-       complet ; le vrai calcul se fera en approchant. */
-    if (d > 260) {
+    /* Objectif très lointain : on avance « au flair » sans payer un A* complet.
+       Ce garde-fou existe pour les zombies, qui poursuivent en permanence et
+       représentent l'essentiel du volume ; un survivant, lui, a besoin d'un
+       vrai itinéraire pour contourner bois et pentes, donc on le laisse
+       calculer beaucoup plus loin. */
+    const greedyRange = e.kind === KIND.ZOM ? 260 : 600;
+    if (d > greedyRange) {
       const free = this.freeDirection(e, (tx - e.x) / d, (ty - e.y) / d, 14);
       this.steer(e, free.x, free.y, dt, speed);
       return;
@@ -1431,7 +1443,13 @@ export class Sim {
     const l = Math.hypot(dx, dy) || 1;
     dx /= l; dy /= l;
 
-    const mul = this.grid.speedMul(e.x, e.y);
+    /* ── Terrain et endurance ──
+       La pénibilité du sol ralentit tout le monde, mais seuls les vivants s'y
+       épuisent. Un zombie n'en subit qu'une fraction et ne se fatigue jamais. */
+    const zombie = e.kind === KIND.ZOM;
+    const ground = this.grid.difficulty(e.x, e.y);
+    const mul = 1 / (zombie ? 1 + (ground - 1) * 0.4 : ground);
+    if (!zombie) speed = this.applyStamina(e, speed, ground, dt);
     const step = speed * mul * dt;
     let nx = e.x + dx * step, ny = e.y + dy * step;
 
@@ -1457,6 +1475,33 @@ export class Sim {
     const f = this.frame;
     e.x = clamp(e.x, 0.5, f.width - 0.5);
     e.y = clamp(e.y, 0.5, f.height - 0.5);
+  }
+
+  /**
+   * Consomme ou reconstitue l'endurance et renvoie la vitesse réellement
+   * tenable. Courir vide la jauge d'autant plus vite que le sol est pénible ;
+   * une fois à bout de souffle on marche jusqu'à avoir suffisamment récupéré.
+   * @returns {number} vitesse corrigée
+   */
+  applyStamina(e, speed, ground, dt) {
+    const wants = speed > e.baseSpeed * 1.12;   // au-delà de l'allure de marche
+    const fit = STAMINA.fitness[e.kind] ?? 1;
+
+    if (wants && !e.blown) {
+      e.stamina -= STAMINA.drainRun * ground * fit * dt;
+      e.restT = 0;
+      if (e.stamina <= STAMINA.exhausted) { e.stamina = 0; e.blown = true; }
+      return speed;
+    }
+
+    /* Marche ou arrêt : on souffle un peu avant de récupérer. */
+    e.restT += dt;
+    if (e.restT >= STAMINA.recoverDelay) {
+      e.stamina = Math.min(1, e.stamina + STAMINA.recover * dt);
+      if (e.blown && e.stamina >= STAMINA.recovered) e.blown = false;
+    }
+    /* À bout de souffle, même marcher devient laborieux. */
+    return e.blown ? Math.min(speed, e.baseSpeed * STAMINA.blownSpeed) : speed;
   }
 
   canStand(x, y, r) {

@@ -29,6 +29,11 @@ export function makeEntity(kind, x, y, opts = {}) {
     stuckT: 0, lastX: x, lastY: y,
     wanderT: 0, wx: 0, wy: 0,
 
+    /* endurance (les zombies n'en ont pas : ils ne se fatiguent jamais) */
+    stamina: 1,
+    blown: false,        // à bout de souffle : marche forcée jusqu'à récupération
+    restT: 0,            // temps de souffle avant que la récupération démarre
+
     /* perception */
     sight: u.sight, fov: u.fov,
     senseT: Math.random() * 0.5,

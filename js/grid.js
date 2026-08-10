@@ -4,7 +4,7 @@
    fournit les tests de collision, de vision et de voisinage.
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, T, BLOCK_MOVE, BLOCK_SIGHT, BLOCK_DRIVE } from './config.js';
+import { CFG, T, BLOCK_MOVE, BLOCK_SIGHT, BLOCK_DRIVE, GROUND } from './config.js';
 import { clamp } from './geo.js';
 
 const NDX = [1, -1, 0, 0, 1, 1, -1, -1];
@@ -17,7 +17,11 @@ export class Grid {
     this.w = Math.max(1, Math.ceil(frame.width  / cell));
     this.h = Math.max(1, Math.ceil(frame.height / cell));
     this.n = this.w * this.h;
-    this.flags = new Uint8Array(this.n);
+    /* 16 bits : il y a plus de huit natures de sol à distinguer. */
+    this.flags = new Uint16Array(this.n);
+    /* Pente en pourcentage, remplie depuis un modèle d'élévation si disponible. */
+    this.slope = new Uint8Array(this.n);
+    this.hasRelief = false;
     this.version = 0;           // incrémenté à chaque modif → invalide les flow-fields
   }
 
@@ -43,13 +47,55 @@ export class Grid {
     return (this.flags[cy * this.w + cx] & BLOCK_SIGHT) !== 0;
   }
 
-  /** Multiplicateur de vitesse du terrain */
-  speedMul(x, y) {
-    const f = this.flagAt(x, y);
-    if (f & T.BLOCKADE) return 0.3;      // on escalade le barrage
-    if (f & T.RUBBLE)   return 0.55;
-    if (f & T.ROAD)     return 1.15;
-    return 1;
+  /* ══ Pénibilité du sol ════════════════════════════════
+     `diff` résume en une valeur (×64, en entier) le coût de chaque cellule :
+     nature du sol et pente combinées. Une seule table alimente la vitesse, la
+     fatigue et le pathfinding — sans quoi les survivants emprunteraient des
+     itinéraires « économiques » sur le papier mais épuisants en pratique. */
+  ensureDifficulty() {
+    if (this.diff && this.diffVersion === this.version) return;
+    if (!this.diff) this.diff = new Uint8Array(this.n);
+    const d = this.diff, fl = this.flags, sl = this.slope;
+    let sum = 0, free = 0;
+    for (let i = 0; i < this.n; i++) {
+      const f = fl[i];
+      let c;
+      if (f & T.BLOCKADE)   c = GROUND.blockade;
+      else if (f & T.RUBBLE) c = GROUND.rubble;
+      else if (f & T.ROAD)   c = GROUND.road;   // la voirie prime sur la nature du sol
+      else if (f & T.MARSH)  c = GROUND.marsh;
+      else if (f & T.ROUGH)  c = GROUND.rough;
+      else if (f & T.FOREST) c = GROUND.forest;
+      else if (f & T.FIELD)  c = GROUND.field;
+      else c = GROUND.neutral;
+      /* La pente s'ajoute partout, y compris sur la route. */
+      if (sl[i]) c += Math.min(sl[i], GROUND.maxSlope) * GROUND.slopePerPercent;
+      d[i] = Math.min(255, Math.round(c * 64));
+      if ((f & BLOCK_MOVE) === 0) { sum += c; free++; }
+    }
+    /* Pénibilité typique du terrain praticable. Elle sert à calibrer
+       l'heuristique de l'A* : une heuristique calée sur le coût d'une route
+       est très mal informée dans une forêt, et l'A* y explore alors un disque
+       énorme. */
+    this.meanDiff = free ? sum / free : 1;
+    this.diffVersion = this.version;
+  }
+
+  /** Coût du sol en (x,y) : 1 = neutre. */
+  difficulty(x, y) {
+    this.ensureDifficulty();
+    const cx = (x / this.cell) | 0, cy = (y / this.cell) | 0;
+    if (!this.inBounds(cx, cy)) return 1;
+    return this.diff[cy * this.w + cx] / 64;
+  }
+
+  /**
+   * Multiplicateur de vitesse. Les zombies subissent le terrain, mais
+   * seulement pour une fraction : ils ne se ménagent pas et ne contournent rien.
+   */
+  speedMul(x, y, zombie = false) {
+    const c = this.difficulty(x, y);
+    return 1 / (zombie ? 1 + (c - 1) * GROUND.zombieShare : c);
   }
 
   /* ── Ligne de vue (Bresenham sur cellules) ───────────── */

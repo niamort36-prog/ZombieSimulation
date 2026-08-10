@@ -75,10 +75,48 @@ porte des drapeaux :
 | `WATER` | infranchissable à pied |
 | `ROAD` | déplacement plus rapide, lieu d'apparition privilégié |
 | `RUBBLE` | franchissable au ralenti (après une frappe) |
+| `FOREST` `FIELD` `ROUGH` `MARSH` | franchissables, mais éprouvants — voir *Terrain et endurance* |
 
 Les **composantes connexes** de la carte sont précalculées : aucune unité
 n'apparaît dans une cour fermée, et un trajet vers une zone non reliée est
 rejeté immédiatement au lieu de faire tourner l'A\* dans le vide.
+
+### Terrain et endurance
+
+Bois, champs, vignes, caillasse et zones humides sont importés depuis OSM, et
+le **relief est réel** : les tuiles d'élévation ouvertes d'AWS sont décodées
+dans le navigateur et la pente de chaque cellule en est déduite. Une seule
+valeur par cellule — la *pénibilité* — résume nature du sol et pente :
+
+| Sol | Coût | Sol | Coût |
+|---|---|---|---|
+| Route | 0,85 | Caillasse, lande | 1,9 |
+| Terrain neutre | 1,0 | Décombres | 2,0 |
+| Champ, pré, parc | 1,3 | Zone humide | 2,4 |
+| Sous-bois | 1,75 | Barrage à escalader | 3,5 |
+
+Chaque point de pente ajoute 0,025 (10 % de pente ≈ +25 %). Sur un versant
+vosgien boisé, la vitesse mesurée tombe à **×0,43** contre ×0,94 sur la route
+d'à côté.
+
+**L'endurance** ne concerne que les vivants. Courir la consomme d'autant plus
+vite que le sol est pénible : environ 35 s d'allure soutenue sur le plat, 15 s
+en sous-bois pentu. Marcher ou s'arrêter la reconstitue après 1,5 s de souffle.
+À bout de souffle on marche, et on ne repart qu'une fois un tiers de la jauge
+récupérée — un civil épuisé en forêt devient plus lent qu'un zombie lent. La
+jauge n'apparaît sous le sprite que lorsqu'elle est entamée ; les militaires
+s'épuisent 40 % moins vite que les civils.
+
+**Les zombies ne se fatiguent jamais.** Le terrain les ralentit, mais pour 40 %
+seulement de la pénalité, et ils n'en tiennent quasiment aucun compte pour
+choisir leur chemin (15 %). C'est ce qui crée l'asymétrie : le survivant
+contourne par la route, le zombie coupe tout droit. La même valeur de
+pénibilité alimente vitesse, fatigue **et** pathfinding — sans quoi un
+survivant emprunterait des itinéraires économiques sur le papier et épuisants
+en pratique.
+
+> Le relief est facultatif (case à cocher, section 1) : s'il ne se charge pas,
+> le terrain reste simplement plat et le reste fonctionne.
 
 ### Population
 
@@ -255,6 +293,7 @@ js/
   pathfinding.js    A* (tas binaire, tampons réutilisés) + flow-fields Dijkstra
   spatial.js        hachage spatial pour la perception et la séparation
   entities.js       fabrique d'entités et fiches d'unités
+  elevation.js      relief : tuiles d'élévation AWS → pente par cellule
   commander.js      officier, doctrine locale, exécution des ordres
   ai-command.js     commandement délégué à un LLM (Gemini / OpenAI / Claude)
   sprites.js        banque de sprites pixel art et atlas
@@ -376,4 +415,5 @@ renderer.opts.terrain = true    // visualiser la grille de navigation
 
 Fond satellite : **Esri World Imagery** (Maxar, Earthstar Geographics).
 Terrain et géocodage : **OpenStreetMap** (contributeurs ODbL), via Overpass et
-Nominatim. Cartographie : **Leaflet**.
+Nominatim. Relief : **AWS Terrain Tiles** (jeu de données ouvert, tuiles
+Terrarium). Cartographie : **Leaflet**.

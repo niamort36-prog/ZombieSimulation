@@ -168,14 +168,26 @@ export class Renderer {
       const cx = c.getContext('2d');
       const img = cx.createImageData(g.w, g.h);
       const d = img.data;
+      g.ensureDifficulty();
       for (let i = 0; i < g.n; i++) {
         const f = g.flags[i], o = i * 4;
         if (f & T.BUILDING)      { d[o] = 220; d[o+1] = 90;  d[o+2] = 90;  d[o+3] = 110; }
         else if (f & T.WATER)    { d[o] = 60;  d[o+1] = 140; d[o+2] = 255; d[o+3] = 120; }
         else if (f & T.WALL)     { d[o] = 255; d[o+1] = 160; d[o+2] = 60;  d[o+3] = 150; }
         else if (f & T.FENCE)    { d[o] = 255; d[o+1] = 220; d[o+2] = 90;  d[o+3] = 110; }
+        else if (f & T.BLOCKADE) { d[o] = 255; d[o+1] = 180; d[o+2] = 84;  d[o+3] = 150; }
         else if (f & T.RUBBLE)   { d[o] = 150; d[o+1] = 140; d[o+2] = 130; d[o+3] = 120; }
         else if (f & T.ROAD)     { d[o] = 120; d[o+1] = 255; d[o+2] = 170; d[o+3] = 55; }
+        else if (f & T.MARSH)    { d[o] = 90;  d[o+1] = 180; d[o+2] = 190; d[o+3] = 95; }
+        else if (f & T.ROUGH)    { d[o] = 200; d[o+1] = 170; d[o+2] = 110; d[o+3] = 80; }
+        else if (f & T.FOREST)   { d[o] = 40;  d[o+1] = 160; d[o+2] = 70;  d[o+3] = 85; }
+        else if (f & T.FIELD)    { d[o] = 190; d[o+1] = 210; d[o+2] = 90;  d[o+3] = 55; }
+        /* La pente se superpose en rouge : plus c'est raide, plus c'est marqué. */
+        const s = g.slope[i];
+        if (s > 6) {
+          const a = Math.min(120, (s - 6) * 4);
+          d[o] = Math.min(255, d[o] + a); d[o+3] = Math.max(d[o+3], a);
+        }
       }
       cx.putImageData(img, 0, 0);
       this.terrainCache = c;
@@ -336,6 +348,15 @@ export class Renderer {
           ctx.fillRect(x - w / 2, y - r * 2.6, w, h);
           ctx.fillStyle = e.hp / e.maxHp > 0.5 ? '#7ee787' : e.hp / e.maxHp > 0.25 ? '#ffb454' : '#ff5b5b';
           ctx.fillRect(x - w / 2, y - r * 2.6, w * (e.hp / e.maxHp), h);
+        }
+        /* Endurance : seulement quand elle est entamée, pour ne pas saturer
+           l'écran de jauges pleines. */
+        if (e.kind !== KIND.ZOM && e.stamina < 0.99) {
+          const w = r * 3, h = 1.4, yy = y - r * 2.6 + (e.hp < e.maxHp ? 2.4 : 0);
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(x - w / 2, yy, w, h);
+          ctx.fillStyle = e.blown ? '#ff8a5b' : '#5bc8ff';
+          ctx.fillRect(x - w / 2, yy, w * e.stamina, h);
         }
         if (e.weapon && k > 1) {
           const w = WEAPON[e.weapon];

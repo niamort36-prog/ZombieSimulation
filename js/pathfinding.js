@@ -6,14 +6,23 @@
      (hélico, largages) : un seul calcul sert à N agents
    ═══════════════════════════════════════════════════════ */
 
-import { CFG, T, BLOCK_MOVE, BLOCK_DRIVE, BLOCKADE } from './config.js';
+import { CFG, T, BLOCK_MOVE, BLOCK_DRIVE, BLOCKADE, GROUND } from './config.js';
 
 const SQ2 = Math.SQRT2;
-/* Coût minimal d'une cellule (les routes sont plus rapides). L'heuristique
-   DOIT être pondérée par cette valeur pour rester admissible : sinon elle
-   surestime, l'A* rouvre indéfiniment les mêmes nœuds et finit par abandonner
-   alors qu'un chemin existe. */
+/* Coût minimal d'une cellule (une route). */
 const MIN_COST = 0.85;
+/**
+ * Échelle de l'heuristique (A* pondéré).
+ *
+ * Une heuristique calée sur le coût minimal absolu — celui d'une route — est
+ * très mal informée dès que le terrain courant coûte deux fois plus : l'A*
+ * dégénère en Dijkstra, explore un disque énorme et épuise son budget avant
+ * d'arriver. On la cale donc sur le terrain *typique* de la carte : proche de
+ * 1 en ville, vers 2 en forêt. Les trajets deviennent légèrement sous-optimaux
+ * là où le sol est meilleur que la moyenne, contre un effondrement du nombre
+ * d'expansions — le compromis habituel en jeu.
+ */
+const hScale = g => Math.max(MIN_COST, g.meanDiff || 1);
 const DX = [1, -1, 0, 0, 1, 1, -1, -1];
 const DY = [0, 0, 1, -1, 1, -1, 1, -1];
 const DC = [1, 1, 1, 1, SQ2, SQ2, SQ2, SQ2];
@@ -70,6 +79,11 @@ export class PathFinder {
   constructor(grid, mode = 'foot') {
     this.g = grid;
     this.mode = mode;
+    /* Profil de coût, réglé avant chaque recherche. Les tampons sont remis à
+       zéro par estampille à chaque appel : basculer entre deux recherches est
+       sans effet de bord, et évite de dupliquer 4 tableaux de la taille de la
+       carte pour un second jeu de coûts. */
+    this.profile = 'human';
     const n = grid.n;
     this.gScore = new Float32Array(n);
     this.came   = new Int32Array(n);
@@ -80,19 +94,24 @@ export class PathFinder {
     this.stats  = { calls: 0, nodes: 0, fails: 0, unreachable: 0 };
   }
 
-  /** Coût de traversée d'une cellule (Infinity si bloquée). */
+  /**
+   * Coût de traversée d'une cellule (Infinity si bloquée).
+   * À pied, il reprend exactement la pénibilité du sol utilisée pour la
+   * vitesse et la fatigue : un survivant qui « trouve » une route la trouve
+   * parce qu'elle lui coûtera vraiment moins cher. Le profil `zombie` n'en
+   * retient qu'une fraction — ils foncent tout droit.
+   */
   cost(i) {
-    const f = this.g.flags[i];
+    const g = this.g, f = g.flags[i];
     if (this.mode === 'road') {
       /* Hors voirie, ou barrage : impraticable pour un véhicule. */
       if ((f & T.ROAD) === 0 || (f & BLOCK_DRIVE)) return Infinity;
       return MIN_COST;
     }
     if (f & BLOCK_MOVE) return Infinity;
-    if (f & T.BLOCKADE) return BLOCKADE.climbCost;
-    if (f & T.RUBBLE) return 2.0;
-    if (f & T.ROAD) return MIN_COST;
-    return 1;
+    g.ensureDifficulty();
+    const c = g.diff[i] / 64;
+    return this.profile === 'zombie' ? 1 + (c - 1) * GROUND.zombiePathShare : c;
   }
 
   /** Cellule praticable pour ce mode de déplacement. */
@@ -132,9 +151,19 @@ export class PathFinder {
        n'existe. */
     if (this.compOf(si) !== this.compOf(ti)) { this.stats.unreachable++; return null; }
 
-    // Raccourci : ligne droite dégagée
-    if (this.clearLine(sx, sy, (t.x + .5) * c, (t.y + .5) * c))
-      return [{ x: (t.x + .5) * c, y: (t.y + .5) * c }];
+    /* Raccourci : ligne droite dégagée.
+       Attention — « dégagé » ne veut pas dire « praticable ». Prendre ce
+       raccourci dès que rien ne bloque revenait à traverser 400 m de sous-bois
+       en ligne droite alors qu'une route longeait le trajet : le terrain était
+       calculé mais jamais consulté. On ne l'emprunte donc que si la ligne est
+       elle-même peu coûteuse, ou trop courte pour qu'un détour rapporte. */
+    const tgx = (t.x + .5) * c, tgy = (t.y + .5) * c;
+    if (this.clearLine(sx, sy, tgx, tgy)) {
+      const straight = Math.hypot(tgx - sx, tgy - sy);
+      if (straight < 60 || this.profile === 'zombie' ||
+          this.lineDifficulty(sx, sy, tgx, tgy) <= 1.15)
+        return [{ x: tgx, y: tgy }];
+    }
 
     const { gScore, came, stamp, closed, heap } = this;
     const mark = ++this.mark;
@@ -145,6 +174,7 @@ export class PathFinder {
 
     let nodes = 0, found = false;
     const tcx = t.x, tcy = t.y;
+    const hs = hScale(g);
 
     while (heap.size) {
       const cur = heap.pop();
@@ -169,7 +199,7 @@ export class PathFinder {
         if (stamp[ni] === mark && ng >= gScore[ni]) continue;
         stamp[ni] = mark; gScore[ni] = ng; came[ni] = cur;
         const dx = Math.abs(nx - tcx), dy = Math.abs(ny - tcy);
-        const hh = (dx > dy ? dx + (SQ2 - 1) * dy : dy + (SQ2 - 1) * dx) * MIN_COST;
+        const hh = (dx > dy ? dx + (SQ2 - 1) * dy : dy + (SQ2 - 1) * dx) * hs;
         heap.push(ni, ng + hh);
       }
     }
@@ -224,6 +254,21 @@ export class PathFinder {
     return true;
   }
 
+  /** Pénibilité moyenne du sol le long d'un segment (1 = terrain neutre). */
+  lineDifficulty(x0, y0, x1, y1) {
+    const g = this.g, c = g.cell;
+    g.ensureDifficulty();
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(1, Math.ceil(len / (c * 2)));
+    let sum = 0;
+    for (let i = 0; i <= steps; i++) {
+      const x = x0 + (x1 - x0) * i / steps, y = y0 + (y1 - y0) * i / steps;
+      const cx = (x / c) | 0, cy = (y / c) | 0;
+      sum += g.inBounds(cx, cy) ? g.diff[cy * g.w + cx] / 64 : 1;
+    }
+    return sum / (steps + 1);
+  }
+
   /** Cellule praticable la plus proche, selon le mode. */
   nearestOk(cx, cy, maxRing) {
     if (this.ok(cx, cy)) return { x: cx, y: cy };
@@ -273,6 +318,7 @@ export class FlowField {
       if (!f) { this.empty = true; return; }
       cx = f.x; cy = f.y;
     }
+    g.ensureDifficulty();
     const heap = new Heap(8192);
     const done = new Uint8Array(g.n);
     const start = cy * W + cx;
@@ -294,7 +340,9 @@ export class FlowField {
         const f = flags[ni];
         if (f & BLOCK_MOVE) continue;
         if (k >= 4 && ((flags[uy * W + nx] & BLOCK_MOVE) || (flags[ny * W + ux] & BLOCK_MOVE))) continue;
-        const step = (f & T.RUBBLE ? 2.0 : f & T.ROAD ? MIN_COST : 1) * DC[k];
+        /* Même pénibilité que l'A* à pied : les civils convergent vers
+           l'hélicoptère par le chemin le moins épuisant, pas le plus court. */
+        const step = (g.diff[ni] / 64) * DC[k];
         const nd = d0 + step;
         if (nd < this.dist[ni]) {
           this.dist[ni] = nd;

@@ -46,7 +46,7 @@ export const CFG = {
   },
 };
 
-/* Masques de bits de la grille */
+/* Masques de bits de la grille (Uint16 : 11 drapeaux utilisés) */
 export const T = {
   FREE:     0,
   BUILDING: 1 << 0,   // bloque déplacement + vue
@@ -56,6 +56,11 @@ export const T = {
   ROAD:     1 << 4,   // circulable, bonus de vitesse à pied
   RUBBLE:   1 << 5,   // décombres : franchissable au ralenti
   BLOCKADE: 1 << 6,   // barrage : infranchissable en véhicule, escaladable à pied
+  /* Natures de sol : franchissables, mais plus ou moins éprouvantes */
+  FOREST:   1 << 7,   // bois, broussailles denses
+  FIELD:    1 << 8,   // champs, prés, vignes, parcs
+  ROUGH:    1 << 9,   // caillasse, sable, éboulis, lande
+  MARSH:    1 << 10,  // zone humide : très pénible
 };
 export const BLOCK_MOVE = T.BUILDING | T.WATER | T.WALL | T.FENCE;
 export const BLOCK_SIGHT = T.BUILDING | T.WALL;
@@ -145,6 +150,47 @@ export const FORTIFY = {
 
 /* Carte de menace : grille grossière servant à juger si un secteur est sûr */
 export const THREAT = { cell: 32, decay: 0.82, refresh: 1.0, radius: 1 };
+
+/* ── Pénibilité du terrain ───────────────────────────
+   Une seule valeur par cellule résume le coût du sol : 1 = terrain neutre.
+   Elle sert à la fois à la vitesse, à la fatigue et au pathfinding, ce qui
+   garantit que les survivants empruntent réellement les itinéraires qu'ils
+   trouvent les moins coûteux. */
+export const GROUND = {
+  road: 0.85,        // bitume : on y court plus vite et on s'y fatigue moins
+  neutral: 1,        // sol nu, cour, place
+  field: 1.3,        // champs, prés, vignes : labours et hautes herbes
+  forest: 1.75,      // sous-bois : branches, ronces, racines
+  rough: 1.9,        // caillasse, sable, éboulis
+  marsh: 2.4,        // zone humide
+  rubble: 2.0,       // décombres après une frappe
+  blockade: 3.5,     // franchissement d'un barrage
+  /* Pente : chaque point de pourcentage ajoute ce coût (10 % ≈ +25 %). */
+  slopePerPercent: 0.025,
+  maxSlope: 45,      // au-delà, on plafonne
+  /* Les zombies subissent le terrain, mais bien moins : ils ne contournent
+     rien et ne se ménagent pas. */
+  zombieShare: 0.4,
+  /* …et n'en tiennent presque aucun compte pour choisir leur chemin. */
+  zombiePathShare: 0.15,
+};
+
+/* ── Endurance ───────────────────────────────────────
+   Réservée aux vivants. Courir la consomme d'autant plus vite que le sol est
+   pénible ; marcher ou s'arrêter la reconstitue après un temps de souffle. */
+export const STAMINA = {
+  /* Calibré pour ~35 s de course soutenue sur terrain neutre, ~15 s en
+     sous-bois pentu. Une allure de 12 km/h est un footing, pas un sprint :
+     des valeurs plus sévères mettaient les deux tiers de la population à
+     l'arrêt en permanence. */
+  drainRun: 0.028,      // par seconde de course sur terrain neutre
+  recover: 0.045,       // par seconde de récupération
+  recoverDelay: 1.5,    // secondes de marche avant que la récupération démarre
+  exhausted: 0.04,      // en dessous : impossible de courir
+  recovered: 0.35,      // au-dessus : on peut repartir
+  blownSpeed: 0.75,     // vitesse (× marche) quand on est à bout de souffle
+  fitness: { civ: 1, pol: 0.78, mil: 0.62 },  // multiplicateur de consommation
+};
 
 /* ── Commandant ──────────────────────────────────────
    Tant qu'il est en vie, il coordonne les forces : il établit la base,

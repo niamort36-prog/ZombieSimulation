@@ -32,6 +32,36 @@ const OCCUPANCY = {
   yes: 0.55,        // bâtiment non typé : mixte habitat / commerce
 };
 
+/* Nature du sol → drapeau de pénibilité. Les surfaces sont rasterisées avant
+   la voirie et les bâtiments, qui priment ensuite. */
+const GROUND_TAGS = {
+  landuse: {
+    forest: T.FOREST,
+    farmland: T.FIELD, meadow: T.FIELD, orchard: T.FIELD, vineyard: T.FIELD,
+    grass: T.FIELD, allotments: T.FIELD, greenfield: T.FIELD,
+    village_green: T.FIELD, recreation_ground: T.FIELD, farmyard: T.FIELD,
+  },
+  natural: {
+    wood: T.FOREST, scrub: T.FOREST,
+    heath: T.ROUGH, sand: T.ROUGH, bare_rock: T.ROUGH,
+    scree: T.ROUGH, shingle: T.ROUGH, fell: T.ROUGH,
+    grassland: T.FIELD,
+    wetland: T.MARSH,
+  },
+  leisure: {
+    park: T.FIELD, garden: T.FIELD, golf_course: T.FIELD, pitch: T.FIELD,
+  },
+};
+
+/** Drapeau de sol d'un élément OSM, ou 0 si ce n'est pas une surface de sol. */
+function groundFlag(tags) {
+  for (const key of ['landuse', 'natural', 'leisure']) {
+    const v = tags[key];
+    if (v && GROUND_TAGS[key][v] !== undefined) return GROUND_TAGS[key][v];
+  }
+  return 0;
+}
+
 function bboxQuery(b) {
   const bb = `${b.south},${b.west},${b.north},${b.east}`;
   return `[out:json][timeout:90];
@@ -45,6 +75,11 @@ function bboxQuery(b) {
   way["waterway"~"^(river|stream|canal|ditch|drain)$"](${bb});
   way["highway"](${bb});
   way["barrier"~"^(wall|fence|hedge|city_wall|retaining_wall)$"](${bb});
+  way["landuse"~"^(forest|farmland|meadow|orchard|vineyard|grass|allotments|greenfield|village_green|recreation_ground|farmyard)$"](${bb});
+  relation["landuse"~"^(forest|farmland|meadow|orchard|vineyard|grass)$"]["type"="multipolygon"](${bb});
+  way["natural"~"^(wood|scrub|heath|grassland|sand|bare_rock|scree|shingle|wetland|fell)$"](${bb});
+  relation["natural"~"^(wood|scrub|heath|grassland|wetland)$"]["type"="multipolygon"](${bb});
+  way["leisure"~"^(park|garden|golf_course|pitch)$"](${bb});
 );
 out geom;`;
 }
@@ -119,7 +154,7 @@ function isClosed(geom) {
  */
 export function buildTerrain(osm, frame, grid) {
   const buildings = [];
-  let nWater = 0, nRoad = 0, nBarrier = 0;
+  let nWater = 0, nRoad = 0, nBarrier = 0, nGround = 0;
 
   const doPolygon = (pts, tags) => {
     if (pts.length < 3) return;
@@ -163,6 +198,15 @@ export function buildTerrain(osm, frame, grid) {
         if (isClosed(g) || el.type === 'relation') { doPolygon(pts, tags); continue; }
       }
 
+      /* Natures de sol (bois, champs, caillasse, marais).
+         L'ordre de tracé importe peu : la table de pénibilité arbitre les
+         superpositions, la voirie et le bâti primant toujours sur le sol. */
+      const ground = groundFlag(tags);
+      if (ground) {
+        if (isClosed(g) || el.type === 'relation') { grid.fillPolygon(pts, ground); nGround++; }
+        continue;
+      }
+
       /* Cours d'eau linéaires */
       if (tags.waterway && CFG.WIDTH[tags.waterway] !== undefined) {
         const w = parseFloat(tags.width) || CFG.WIDTH[tags.waterway];
@@ -196,7 +240,8 @@ export function buildTerrain(osm, frame, grid) {
 
   return {
     buildings,
-    stats: { buildings: buildings.length, water: nWater, roads: nRoad, barriers: nBarrier },
+    stats: { buildings: buildings.length, water: nWater, roads: nRoad,
+             barriers: nBarrier, ground: nGround },
   };
 }
 
