@@ -251,6 +251,12 @@ freinage devant un obstacle, et écrasement des zombies happés par la calandre.
   a pas de base, auquel cas ils comptent comme évacués.
 - Une frappe transforme un véhicule en **épave**, qui obstrue durablement la
   chaussée.
+- **Un véhicule à l'arrêt n'est pas un abri** : les zombies s'acharnent sur la
+  carrosserie, et quand elle cède les occupants se retrouvent dehors, à
+  découvert. Un véhicule lancé, lui, les écrase.
+- Quand des dizaines de voitures convergent au même endroit, le bouchon ne se
+  résorbe pas tout seul : au bout de 14 s à l'arrêt, les occupants abandonnent
+  le véhicule et finissent à pied.
 
 ### Maisons barricadées
 
@@ -264,9 +270,15 @@ bloquerait ses propres tirs.
 
 ### Infection
 
-Une morsure blesse ; à zéro point de vie la victime tombe **au sol, contaminée**
-(anneau de décompte autour du sprite) et se relève en zombie après le délai
-réglé. Une victime achevée à l'explosif ne se relève pas.
+Chaque morsure est une **chance de contamination** (curseur, 70 % par défaut),
+pas une condamnation. Une fois contaminé, le sujet se transformera à l'échéance
+du délai — **qu'il ait succombé ou qu'il coure encore** : un civil infecté
+continue de fuir, peut se barricader ou monter dans une voiture, puis se relève
+en zombie au milieu des autres. Un anneau violet compte le temps qu'il reste.
+
+Une victime non contaminée qui tombe meurt simplement. Une victime achevée à
+l'explosif ne se relève pas. Le curseur de contamination change radicalement la
+dynamique : à 70 % l'épidémie s'emballe, à 20 % les militaires tiennent.
 
 ### Opérations
 

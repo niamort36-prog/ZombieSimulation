@@ -328,6 +328,17 @@ export class Renderer {
 
       this.sprite(ctx, e, x, y, r, tiny);
 
+      /* Contaminé mais encore debout : compte à rebours violet autour du
+         sprite. C'est la bombe à retardement au milieu des vivants. */
+      if (e.infected && e.alive && !tiny) {
+        const p = 1 - Math.max(0, e.turnT) / Math.max(0.001, s.params.turnDelay * 1.5);
+        ctx.strokeStyle = 'rgba(180,90,240,0.9)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 1.7, -1.57, -1.57 + 6.283 * Math.min(1, p));
+        ctx.stroke();
+      }
+
       /* Le commandant porte un galon : il faut pouvoir le suivre des yeux. */
       if (e.commander && !tiny) {
         ctx.strokeStyle = 'rgba(255,214,120,0.95)';

@@ -21,18 +21,39 @@ export const PROVIDERS = {
     keyHint: 'Clé AI Studio (aistudio.google.com/apikey)',
     async call(cfg, system, user, signal) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`;
+      /* Les modèles 2.5 « réfléchissent » avant de répondre, et ce raisonnement
+         se paie sur le même budget de sortie : avec 2048 jetons, la réflexion
+         consommait tout et le JSON arrivait tronqué — d'où un « JSON
+         incomplet » qui n'avait rien à voir avec le format. On coupe la
+         réflexion sur les modèles Flash et on desserre le budget. */
+      const gen = {
+        temperature: 0.4,
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
+      };
+      if (/flash/i.test(cfg.model)) gen.thinkingConfig = { thinkingBudget: 0 };
+
       const res = await fetch(url, {
         method: 'POST', signal,
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.key },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+          generationConfig: gen,
         }),
       });
       if (!res.ok) throw new Error(await describe(res));
       const j = await res.json();
-      return (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+
+      if (j.promptFeedback?.blockReason)
+        throw new Error(`requête bloquée (${j.promptFeedback.blockReason})`);
+      const cand = j.candidates?.[0];
+      if (!cand) throw new Error('aucune réponse renvoyée');
+      if (cand.finishReason && cand.finishReason !== 'STOP')
+        throw new Error(cand.finishReason === 'MAX_TOKENS'
+          ? 'réponse tronquée par le budget de jetons'
+          : `réponse interrompue (${cand.finishReason})`);
+      return (cand.content?.parts || []).map(p => p.text || '').join('');
     },
   },
 
@@ -149,7 +170,7 @@ function extractJSON(text) {
     else if (c === '{') depth++;
     else if (c === '}' && --depth === 0) return JSON.parse(body.slice(start, i + 1));
   }
-  throw new Error('JSON incomplet');
+  throw new Error(`JSON incomplet (réponse coupée après ${body.length} caractères)`);
 }
 
 /**

@@ -359,6 +359,7 @@ bindSlider('#s-zcount', '#v-zcount', 'zCount');
 bindSlider('#s-zfast', '#v-zfast', 'zFastPct');
 bindSlider('#s-zslow', '#v-zslow', 'zSlow', v => v.toFixed(1));
 bindSlider('#s-zfastspd', '#v-zfastspd', 'zFast', v => v.toFixed(1));
+bindSlider('#s-infect', '#v-infect', 'infectChance');
 bindSlider('#s-turn', '#v-turn', 'turnDelay');
 bindSlider('#s-zsight', '#v-zsight', 'zSight');
 bindSlider('#s-zhear', '#v-zhear', 'zHear');

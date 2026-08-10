@@ -48,6 +48,7 @@ export class Sim {
       density: 1, outdoorPct: 25, police: 12, military: 24, armedCivPct: 3,
       zCount: 60, zFastPct: 20, zSlow: 0.8, zFast: 4, turnDelay: 12,
       zSight: 45, zHear: 90, azimuths: new Set(['N']),
+      infectChance: 70,
       heliCap: 12, heliBoard: 3, heliWait: 45, strikeRadius: 40,
       autoWave: false, wavePeriod: 120,
       civCars: 40, milTrucks: 3, useVehicles: true, autoEscort: true,
@@ -606,11 +607,22 @@ export class Sim {
   /* ═══ Entité : mise à jour ════════════════════════════ */
   updateEntity(e, dt) {
     if (!e.alive) {
-      if (e.state === ST.TURNING) {
+      /* Un corps contaminé se relève. Ce décompte doit tourner ici : il était
+         placé plus bas, après le `return` réservé aux morts, donc jamais
+         atteint — plus personne ne se transformait. */
+      if (e.infected && (e.state === ST.DOWNED || e.state === ST.TURNING)) {
         e.turnT -= dt;
         if (e.turnT <= 0) this.turnIntoZombie(e);
       }
       return;
+    }
+
+    /* Contamination : le compte à rebours court debout comme à terre, à
+       l'abri comme en voiture. Placé avant tous les aiguillages pour ne
+       jamais être court-circuité. */
+    if (e.infected) {
+      e.turnT -= dt;
+      if (e.turnT <= 0) { this.turnIntoZombie(e); return; }
     }
 
     /* À bord d'un véhicule : la conduite est gérée par le véhicule lui-même,
@@ -650,13 +662,6 @@ export class Sim {
     }
     e.alert = Math.max(0, e.alert - dt * 0.05);
 
-    /* Blessé mortellement, en train de se transformer */
-    if (e.state === ST.DOWNED) {
-      e.turnT -= dt;
-      if (e.turnT <= 0) this.turnIntoZombie(e);
-      return;
-    }
-
     if (e.kind === KIND.ZOM) this.aiZombie(e, dt);
     else if (e.kind === KIND.CIV) this.aiCivilian(e, dt);
     else this.aiFighter(e, dt);
@@ -669,8 +674,11 @@ export class Sim {
       e.senseT = CFG.SENSE_REFRESH * rand(0.8, 1.4);
       if (!e.target || !isPrey(e.target) || dist(e.x, e.y, e.target.x, e.target.y) > e.sight * 1.6)
         e.target = this.findPrey(e);
-      /* Sans proie visible : repérage d'un bâtiment habité (odeur / bruit) */
+      /* Sans proie visible : repérage d'un bâtiment habité (odeur / bruit)
+         ou d'un véhicule occupé à l'arrêt — une carrosserie ne protège pas
+         indéfiniment. */
       e.zBuilding = e.target ? null : this.nearbyOccupiedBuilding(e);
+      e.zVehicle = e.target ? null : this.nearbyOccupiedVehicle(e);
     }
 
     /* 2. Cible visible → poursuite */
@@ -688,7 +696,23 @@ export class Sim {
     }
     e.target = null;
 
-    /* 3. Bâtiment habité tout proche → tentative d'effraction */
+    /* 3. Véhicule occupé à l'arrêt → on s'acharne sur la carrosserie */
+    const veh = (e.zVehicle && e.zVehicle.alive && e.zVehicle.occupants.length)
+      ? e.zVehicle : (e.zVehicle = null);
+    if (veh) {
+      const d = dist(e.x, e.y, veh.x, veh.y);
+      if (d < veh.spec.half + 2.6) {
+        this.face(e, veh.x, veh.y);
+        this.clawVehicle(e, veh);
+        e.state = ST.ATTACK;
+        return;
+      }
+      e.state = ST.SEEK;
+      this.moveToward(e, veh.x, veh.y, dt, e.baseSpeed, 0.8);
+      return;
+    }
+
+    /* 4. Bâtiment habité tout proche → tentative d'effraction */
     const b = (e.zBuilding && e.zBuilding.occupants.length && !e.zBuilding.destroyed)
       ? e.zBuilding : (e.zBuilding = null);
     if (b) {
@@ -751,6 +775,42 @@ export class Sim {
     return best;
   }
 
+  /** Véhicule occupé, assez lent pour être pris d'assaut. */
+  nearbyOccupiedVehicle(e) {
+    let best = null, bd = 40;
+    for (const v of this.vehicles) {
+      if (!v.alive || !v.occupants.length) continue;
+      if (v.v > 3.5) continue;            // lancé : on ne l'attrape pas
+      const d = dist(e.x, e.y, v.x, v.y);
+      if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+  }
+
+  /** Un zombie s'acharne sur une carrosserie ; elle finit par céder. */
+  clawVehicle(z, v) {
+    if (z.biteT > 0) return;
+    z.biteT = UNIT[KIND.ZOM].bite.cooldown;
+    v.hp -= UNIT[KIND.ZOM].bite.dps * UNIT[KIND.ZOM].bite.cooldown * 0.7;
+    if (this.time - (v.panicT || -9) > 1.5) {
+      v.panicT = this.time;
+      this.emitNoise(v.x, v.y, 70, 0.5);
+      for (const o of v.occupants) o.alert = 2;
+    }
+    if (v.hp <= 0) this.wreckVehicle(v);
+  }
+
+  /** Le véhicule cède : les occupants se retrouvent dehors, à découvert. */
+  wreckVehicle(v) {
+    for (const o of v.occupants.slice()) disembark(this, o, v);
+    v.occupants.length = 0;
+    v.driver = null;
+    v.alive = false;
+    v.state = 'wreck';
+    v.v = 0;
+    this.addBlood(v.x, v.y, 1.2, '#2a2320');
+  }
+
   breachBuilding(b) {
     const occ = b.occupants.slice();
     for (const o of occ) {
@@ -776,20 +836,35 @@ export class Sim {
     z.biteT = UNIT[KIND.ZOM].bite.cooldown;
     const dmg = UNIT[KIND.ZOM].bite.dps * UNIT[KIND.ZOM].bite.cooldown;
     victim.hp -= dmg;
-    victim.infected = true;
     victim.alert = 2;
     this.addBlood(victim.x, victim.y);
+
+    /* Chaque morsure est une chance de contamination, pas une condamnation.
+       Une fois contaminé, le sujet se transformera à l'échéance du délai —
+       qu'il ait succombé ou qu'il coure encore. */
+    if (!victim.infected && Math.random() < this.params.infectChance / 100) {
+      victim.infected = true;
+      victim.turnT = Math.max(0.5, this.params.turnDelay * rand(0.6, 1.5));
+      this.stats.bitten++;
+    }
+
     if (Math.random() < 0.5) this.emitNoise(victim.x, victim.y, CFG.NOISE.scream, 0.7);
-    if (victim.hp <= 0) this.downHuman(victim);
+    if (victim.hp <= 0) {
+      /* Contaminé : il agonise puis se relève. Sinon, mort nette. */
+      if (victim.infected) this.downHuman(victim);
+      else this.killOutright(victim, 1.4);
+    }
   }
 
   downHuman(e) {
     e.alive = false;
     e.state = ST.DOWNED;
-    e.turnT = Math.max(0.2, this.params.turnDelay * rand(0.6, 1.5));
+    /* Le délai a déjà été armé à la contamination : on ne le réarme que s'il
+       manque (mise à terre par une autre cause). */
+    if (!(e.turnT > 0)) e.turnT = Math.max(0.5, this.params.turnDelay * rand(0.6, 1.5));
+    e.infected = true;
     e.path = null;
     e.target = null;
-    this.stats.bitten++;
     this.addBlood(e.x, e.y, 2.2);
     if (e.home) { const i = e.home.occupants.indexOf(e); if (i >= 0) e.home.occupants.splice(i, 1); }
   }
@@ -805,8 +880,46 @@ export class Sim {
 
   turnIntoZombie(src) {
     const p = this.params;
+
+    /* Le sujet peut se transformer n'importe où : à l'abri chez lui, à bord
+       d'un véhicule, au milieu d'une escouade. Il faut le détacher de tout
+       avant de le remplacer, sinon il reste compté comme occupant, passager
+       ou protégé par les uns et les autres. */
+    let px = src.x, py = src.y;
+    if (src.vehicle) {
+      const v = src.vehicle;
+      const i = v.occupants.indexOf(src);
+      if (i >= 0) v.occupants.splice(i, 1);
+      if (v.driver === src) v.driver = v.occupants.find(o => o.alive) || null;
+      src.vehicle = null;
+      /* On surgit à côté du véhicule, jamais dans la carrosserie. */
+      const spot = this.grid.nearestFree(v.x + rand(-4, 4), v.y + rand(-4, 4), 12);
+      if (spot) { px = spot.x; py = spot.y; }
+    }
+    if (src.home) {
+      const i = src.home.occupants.indexOf(src);
+      if (i >= 0) src.home.occupants.splice(i, 1);
+      if (src.indoor) {
+        const door = this.doorOf(src.home);
+        if (door) { px = door.x; py = door.y; }
+      }
+    }
+    if (src.escort) {
+      const k = src.escort.escorted.indexOf(src);
+      if (k >= 0) src.escort.escorted.splice(k, 1);
+      src.escort = null;
+    }
+    if (src.squad) {
+      const k = src.squad.members.indexOf(src);
+      if (k >= 0) src.squad.members.splice(k, 1);
+      if (src.squad.leader === src) src.squad.leader = src.squad.members[0] || null;
+      src.squad = null;
+    }
+    src.indoor = false;
+    src.x = px; src.y = py;
+
     const fast = Math.random() < p.zFastPct / 100;
-    const z = makeEntity(KIND.ZOM, src.x, src.y, { zType: fast ? 'fast' : 'slow' });
+    const z = makeEntity(KIND.ZOM, px, py, { zType: fast ? 'fast' : 'slow' });
     z.baseSpeed = z.runSpeed = fast ? p.zFast : p.zSlow;
     z.hp = z.maxHp = fast ? 55 : 75;
     z.sight = p.zSight;
@@ -940,9 +1053,12 @@ export class Sim {
     }
 
     /* ── Prendre une voiture pour fuir ── */
-    if (this.params.useVehicles && e.alert > 0.9 && !e.escort && this.time - (e._carT || -99) > 8) {
+    /* Rayon large : 40 voitures dispersées sur la zone, c'est une centaine de
+       mètres entre deux. À 55 m, la quasi-totalité des civils n'en trouvait
+       jamais une et les voitures ne servaient presque pas. */
+    if (this.params.useVehicles && e.alert > 0.7 && !e.escort && this.time - (e._carT || -99) > 5) {
       e._carT = this.time;
-      const v = this.findVehicle(e, 55, 'civ');
+      const v = this.findVehicle(e, 130, 'civ');
       if (v && this.claimVehicle(v, e)) return;
     }
 
@@ -1063,7 +1179,7 @@ export class Sim {
 
   /** Un civil réquisitionne une voiture et attend quelques secondes ses voisins. */
   claimVehicle(v, e) {
-    const dest = this.base ? { x: this.base.x, y: this.base.y } : this.escapePoint(v.x, v.y);
+    const dest = this.dropoffPoint();
     if (!dest) return false;
     const road = this.grid.nearestRoad(dest.x, dest.y, 60);
     if (!road || this.grid.roadCompAt(v.x, v.y) !== this.grid.roadCompAt(road.x, road.y)) return false;
@@ -1080,6 +1196,21 @@ export class Sim {
       o.vehTarget = v;
     });
     return true;
+  }
+
+  /**
+   * Point de dépose d'un véhicule civil : les abords de la base, ou une
+   * sortie de zone s'il n'y en a pas. Le point est dispersé volontairement —
+   * viser tous la même adresse créait un bouchon inextricable devant la base.
+   */
+  dropoffPoint() {
+    if (!this.base) return this.escapePoint(this.base ? this.base.x : this.frame.width / 2,
+                                            this.base ? this.base.y : this.frame.height / 2);
+    const a = rand(0, Math.PI * 2), r = rand(0.3, 1.1) * this.base.r;
+    return {
+      x: clamp(this.base.x + Math.cos(a) * r, 4, this.frame.width - 4),
+      y: clamp(this.base.y + Math.sin(a) * r, 4, this.frame.height - 4),
+    };
   }
 
   /** Sortie de zone la plus proche par la route (fuite hors du terrain). */
@@ -1757,15 +1888,25 @@ export class Sim {
     for (const v of this.vehicles) {
       if (!v.alive) continue;
 
+      /* Filet de sécurité : un véhicule à l'arrêt, sans mission, ne doit
+         jamais garder des occupants enfermés. C'est ce qui les piégeait
+         quand un itinéraire échouait après l'embarquement. */
+      if (v.state === 'parked' && v.occupants.length && !v.dest) {
+        v.state = 'unloading'; v.loadT = 0;
+      }
+
       /* Embarquement : on patiente un peu pour ne pas partir à vide */
       if (v.state === 'loading') {
         if (this.time > v.claimT || seatsLeft(v) <= 0) {
-          if (v.occupants.length &&
-              driveTo(this, v, v.destWanted.x, v.destWanted.y, v.escape ? 'escape' : 'unload')) {
-            this.releaseClaims(v);
-          } else {
-            v.state = 'parked';
-            this.releaseClaims(v);
+          this.releaseClaims(v);
+          /* `destWanted` doit toujours être posé par le réservataire ; s'il
+             manque, on débarque plutôt que de faire tomber la boucle. */
+          const parti = v.occupants.length && v.destWanted &&
+            driveTo(this, v, v.destWanted.x, v.destWanted.y, v.escape ? 'escape' : 'unload');
+          if (!parti) {
+            /* Destination injoignable : on débarque au lieu d'immobiliser. */
+            v.state = v.occupants.length ? 'unloading' : 'parked';
+            v.loadT = 0;
           }
         }
       }
@@ -1870,9 +2011,9 @@ export class Sim {
     if (!this.params.useVehicles || sq.vehicle) return false;
     const L = sq.leader;
     if (!L || !sq.anchor) return false;
-    if (dist(L.x, L.y, sq.anchor.x, sq.anchor.y) < 220) return false;
+    if (dist(L.x, L.y, sq.anchor.x, sq.anchor.y) < 140) return false;
 
-    const v = this.findVehicle(L, 55, 'mil');
+    const v = this.findVehicle(L, 120, 'mil');
     if (!v) return false;
     const road = this.grid.nearestRoad(sq.anchor.x, sq.anchor.y, 90);
     if (!road) return false;

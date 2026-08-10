@@ -152,7 +152,17 @@ export function updateVehicle(sim, v, dt) {
   if (v.v < 0.4) {
     v.stuckT += dt;
     if (v.stuckT > 3) { v.stuckT = 0; v.path = null; v.pathT = 1.5; }
-  } else v.stuckT = 0;
+    /* …et si rien n'y fait, on abandonne le véhicule. Quand des dizaines de
+       voitures convergent vers le même point, elles se bloquent les unes les
+       autres et le bouchon ne se résorbe jamais : les occupants restaient
+       prisonniers indéfiniment. Au bout d'un moment, on descend et on finit
+       le trajet à pied. */
+    v.jamT = (v.jamT || 0) + dt;
+    if (v.jamT > 14 && v.occupants.length) {
+      v.jamT = 0; v.path = null; v.dest = null;
+      v.state = 'unloading'; v.loadT = 0;
+    }
+  } else { v.stuckT = 0; v.jamT = 0; }
 }
 
 function decel(v, brake, dt) { return Math.max(0, v - brake * dt); }
